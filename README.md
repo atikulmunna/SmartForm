@@ -106,7 +106,7 @@ app/src/main/java/com/app/smartform/
 ## 🛣️ Roadmap
 - Exercise-specific rep counting
 - Hold-to-run gesture mode
-- Left / right hand preference
+- Left/right hand preference
 - On-screen posture coaching feedback
 - Session history and analytics
 - Export workout summaries
