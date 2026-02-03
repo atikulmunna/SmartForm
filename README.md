@@ -59,3 +59,58 @@ Built fully on-device using modern Android tech (CameraX + ML Kit + MediaPipe + 
 
 ## 📂 Project Structure
 
+```text
+app/src/main/java/com/app/smartform/
+├── camera/
+│   └── CameraPreview.kt
+├── pose/
+│   ├── PoseProcessor.kt
+│   ├── PoseFrame.kt
+│   ├── SkeletonOverlay.kt
+│   └── PostureEvaluator.kt
+├── hand/
+│   ├── HandProcessor.kt
+│   ├── HandModels.kt
+│   └── HandOverlay.kt
+├── gesture/
+│   └── GestureDetector.kt
+└── MainActivity.kt
+```
+## ▶️ Build & Run
+
+### Requirements
+- Android Studio (Giraffe+ recommended)
+- Android device with camera (emulator not recommended for pose/hand tracking)
+- Java 11+ (Android Studio bundled JBR works)
+
+### Install & Run
+```bash
+./gradlew :app:installDebug
+```
+### Clean Reinstall (recommended if behavior looks stale)
+```bash
+./gradlew :app:uninstallDebug
+./gradlew :app:installDebug
+```
+## 🔐 Permissions
+```bash
+<uses-permission android:name="android.permission.CAMERA" />
+```
+
+## ⚠️ Known Limitations
+- Best gesture accuracy at ~1–2 meters from the camera
+- Very close distances may reduce hand landmark stability
+- Low lighting conditions can affect detection quality
+- Emulator camera does not provide reliable results for MediaPipe Hands
+
+## 🛣️ Roadmap
+- Exercise-specific rep counting
+- Hold-to-run gesture mode
+- Left / right hand preference
+- On-screen posture coaching feedback
+- Session history and analytics
+- Export workout summaries
+
+## 🤝 Contributing
+This project is experimental and evolving.
+Bug reports, performance improvements, and feature ideas are welcome.
