@@ -40,7 +40,7 @@ Built fully on-device using modern Android tech (CameraX + ML Kit + MediaPipe + 
 > Blue = hand skeleton  
 > Gesture chip appears when a gesture is recognized
 
-*(Add screenshots / GIFs here later)*
+
 
 ---
 
