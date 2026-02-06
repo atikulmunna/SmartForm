@@ -1,6 +1,5 @@
 package com.app.smartform.camera
 
-import android.os.SystemClock
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
@@ -11,9 +10,9 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.app.smartform.hand.HandFrame
 import com.app.smartform.hand.HandProcessor
 import com.app.smartform.pose.PoseFrame
@@ -38,7 +37,9 @@ fun CameraPreview(
     }
 
     val cameraProviderFuture = remember { ProcessCameraProvider.getInstance(context) }
-    val analysisExecutor: ExecutorService = remember { Executors.newSingleThreadExecutor() }
+
+    val poseExecutor: ExecutorService = remember { Executors.newSingleThreadExecutor() }
+    val handExecutor: ExecutorService = remember { Executors.newSingleThreadExecutor() }
 
     val poseProcessor = remember { PoseProcessor(context) }
     val handProcessor = remember { HandProcessor(context) }
@@ -53,36 +54,62 @@ fun CameraPreview(
                 .build()
                 .also { it.setSurfaceProvider(previewView.surfaceProvider) }
 
-            val analysis = ImageAnalysis.Builder()
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .build()
-
             val selector = CameraSelector.DEFAULT_FRONT_CAMERA
             val isFrontCamera = true
 
-            analysis.setAnalyzer(analysisExecutor) { imageProxy ->
-                val ts = SystemClock.uptimeMillis()
+            // Pose: YUV (ML Kit-safe)
+            val poseAnalysis = ImageAnalysis.Builder()
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
+                .build()
 
-                runCatching {
-                    handProcessor.process(
-                        imageProxy = imageProxy,
-                        isFrontCamera = isFrontCamera,
-                        timestampMs = ts,
-                        onHandFrame = onHandFrame
-                    )
-                }.onFailure {
-                    onHandFrame(null)
-                }
-
+            poseAnalysis.setAnalyzer(poseExecutor) { imageProxy ->
                 poseProcessor.process(
                     imageProxy = imageProxy,
                     isFrontCamera = isFrontCamera,
                     onPoseFrame = onPoseFrame
                 )
+                // PoseProcessor closes imageProxy asynchronously (in addOnCompleteListener)
             }
 
-            cameraProvider.unbindAll()
-            cameraProvider.bindToLifecycle(lifecycleOwner, selector, preview, analysis)
+            // Hands: RGBA (MediaPipe-friendly)
+            val handAnalysis = ImageAnalysis.Builder()
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
+                .build()
+
+            handAnalysis.setAnalyzer(handExecutor) { imageProxy ->
+                // Use camera timestamp (ns) -> ms. More stable than uptimeMillis().
+                val tsMs = imageProxy.imageInfo.timestamp / 1_000_000L
+
+                try {
+                    handProcessor.process(
+                        imageProxy = imageProxy,
+                        isFrontCamera = isFrontCamera,
+                        timestampMs = tsMs,
+                        onHandFrame = onHandFrame
+                    )
+                } catch (_: Throwable) {
+                    onHandFrame(null)
+                } finally {
+                    // HandProcessor does NOT close, so we close here.
+                    runCatching { imageProxy.close() }
+                }
+            }
+
+            runCatching {
+                cameraProvider.unbindAll()
+                cameraProvider.bindToLifecycle(
+                    lifecycleOwner,
+                    selector,
+                    preview,
+                    poseAnalysis,
+                    handAnalysis
+                )
+            }.onFailure {
+                // If binding fails, avoid silent crash; also stop overlays.
+                onHandFrame(null)
+            }
         }
 
         cameraProviderFuture.addListener(listener, mainExecutor)
@@ -91,7 +118,8 @@ fun CameraPreview(
             runCatching { cameraProviderFuture.get().unbindAll() }
             runCatching { poseProcessor.close() }
             runCatching { handProcessor.close() }
-            runCatching { analysisExecutor.shutdown() }
+            runCatching { poseExecutor.shutdownNow() }
+            runCatching { handExecutor.shutdownNow() }
         }
     }
 

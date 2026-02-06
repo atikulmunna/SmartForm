@@ -60,5 +60,7 @@ dependencies {
     // implementation("com.google.mlkit:pose-detection-accurate:18.0.0-beta5")
 
     implementation("com.google.mediapipe:tasks-vision:0.10.29")
+    implementation("androidx.datastore:datastore-preferences:1.1.1")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
 
 }

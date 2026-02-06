@@ -1,6 +1,7 @@
 package com.app.smartform.pose
 
 import android.content.Context
+import android.graphics.ImageFormat
 import android.graphics.Rect
 import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageProxy
@@ -13,6 +14,7 @@ import kotlin.math.max
 import kotlin.math.min
 
 class PoseProcessor(context: Context) {
+
     private val detector: PoseDetector = PoseDetection.getClient(
         PoseDetectorOptions.Builder()
             .setDetectorMode(PoseDetectorOptions.STREAM_MODE)
@@ -21,7 +23,7 @@ class PoseProcessor(context: Context) {
 
     private val latestFrameId = AtomicLong(0L)
 
-    @ExperimentalGetImage
+    @OptIn(ExperimentalGetImage::class)
     fun process(
         imageProxy: ImageProxy,
         isFrontCamera: Boolean,
@@ -35,9 +37,15 @@ class PoseProcessor(context: Context) {
             return
         }
 
+        // ✅ Guard: ML Kit only supports YUV_420_888 or JPEG
+        val fmt = mediaImage.format
+        if (fmt != ImageFormat.YUV_420_888 && fmt != ImageFormat.JPEG) {
+            imageProxy.close()
+            return
+        }
+
         val rotation = imageProxy.imageInfo.rotationDegrees
 
-        // Rotate cropRect into the same "upright" space that ML Kit outputs landmarks in
         val rotatedCrop = rotateRectToUpright(
             rect = imageProxy.cropRect,
             rotationDegrees = rotation,
@@ -45,10 +53,8 @@ class PoseProcessor(context: Context) {
             srcHeight = imageProxy.height
         )
 
-        // ML Kit uses this rotation to return upright landmark coordinates
         val inputImage = InputImage.fromMediaImage(mediaImage, rotation)
 
-        // Set upright dimensions (swap when 90/270)
         val uprightW = if (rotation == 90 || rotation == 270) imageProxy.height else imageProxy.width
         val uprightH = if (rotation == 90 || rotation == 270) imageProxy.width else imageProxy.height
 
