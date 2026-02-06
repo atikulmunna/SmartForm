@@ -23,7 +23,13 @@ import com.app.smartform.hand.HandOverlay
 import com.app.smartform.pose.PoseFrame
 import com.app.smartform.pose.PostureEvaluator
 import com.app.smartform.pose.SkeletonOverlay
-import com.app.smartform.reps.*
+import com.app.smartform.reps.CalibrationProfile
+import com.app.smartform.reps.ExerciseMode
+import com.app.smartform.reps.RepCounter
+import com.app.smartform.reps.RepQuality
+import com.app.smartform.reps.RepQualityEvaluator
+import com.app.smartform.reps.RepResult
+import com.app.smartform.reps.RepThresholds
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.PermissionStatus
 import com.google.accompanist.permissions.rememberPermissionState
@@ -65,13 +71,7 @@ private fun CameraScreen() {
 
     var gestureLabel by remember { mutableStateOf<String?>(null) }
     var gestureShownAt by remember { mutableLongStateOf(0L) }
-
-    // Pinch-hold + cooldown (1s)
-    var pinchStartTime by remember { mutableLongStateOf(0L) }
-    var pinchActive by remember { mutableStateOf(false) }
-    var lastToggleTime by remember { mutableLongStateOf(0L) }
-    val pinchHoldMs = 1000L
-    val toggleCooldownMs = 1000L
+    val showGesture = gestureLabel != null && (SystemClock.uptimeMillis() - gestureShownAt) < 900
 
     val now = SystemClock.uptimeMillis()
     val freshHandFrame = handFrame?.takeIf { now - it.timestampMs < 200 }
@@ -81,18 +81,17 @@ private fun CameraScreen() {
         1 -> ExerciseMode.SQUAT
         else -> ExerciseMode.PUSHUP
     }
-
     val modeName = when (modeIndex) {
         0 -> "Curl"
         1 -> "Squat"
         else -> "Push-up"
     }
 
-    val showGesture = gestureLabel != null && (SystemClock.uptimeMillis() - gestureShownAt) < 700
-
+    // DataStore calibration
     val store = remember { CalibrationStore(context.applicationContext) }
     val profile by store.profileFlow.collectAsState(initial = CalibrationProfile())
 
+    // Rep counter
     val repCounter = remember { RepCounter() }
     var repResult by remember { mutableStateOf(RepResult(0, "IDLE", angle = null)) }
 
@@ -105,7 +104,7 @@ private fun CameraScreen() {
         repResult = repCounter.update(mode, poseFrame, isRunning, profile)
     }
 
-    // Session quality tracking
+    // ---- QUALITY TRACKING ----
     var prevReps by remember { mutableIntStateOf(0) }
     var repAngleMin by remember { mutableStateOf<Double?>(null) }
     var lastRepAt by remember { mutableLongStateOf(0L) }
@@ -168,7 +167,12 @@ private fun CameraScreen() {
 
     fun currentAngle(): Double? = repCounter.currentPrimaryAngle(mode, poseFrame)
 
-    fun buildCalibratedProfile(existing: CalibrationProfile, mode: ExerciseMode, up: Double, down: Double): CalibrationProfile {
+    fun buildCalibratedProfile(
+        existing: CalibrationProfile,
+        mode: ExerciseMode,
+        up: Double,
+        down: Double
+    ): CalibrationProfile {
         val hi = maxOf(up, down)
         val lo = minOf(up, down)
         val range = maxOf(15.0, abs(hi - lo))
@@ -193,24 +197,52 @@ private fun CameraScreen() {
         }
     }
 
-    // Gesture detection loop
+    // ---- Gesture state machine (robust + no random palm switches) ----
+    var armed by remember { mutableStateOf(true) }
+    var lastGestureAt by remember { mutableLongStateOf(0L) }
+    val gestureCooldownMs = 1000L
+
+    // Pinch hold
+    var pinchActive by remember { mutableStateOf(false) }
+    var pinchStartTime by remember { mutableLongStateOf(0L) }
+    val pinchHoldMs = 1000L
+
+    // Open palm stability
+    var palmStreak by remember { mutableIntStateOf(0) }
+    val palmNeedFrames = 4
+
+    // Rearm on NONE
+    var noneStreak by remember { mutableIntStateOf(0) }
+    val rearmNeedNoneFrames = 3
+
     LaunchedEffect(freshHandFrame?.timestampMs) {
         val nowMs = SystemClock.uptimeMillis()
+        val inCooldown = (nowMs - lastGestureAt) < gestureCooldownMs
 
         val g = GestureDetector.detect(
             freshHandFrame,
-            minHandScore = 0.5f,
-            minPalmAreaForOpenPalm = 0.012f
+            minHandScore = 0.60f,
+            minPalmAreaForOpenPalm = 0.020f
         )
 
         when (g) {
+            is Gesture.None -> {
+                noneStreak += 1
+                palmStreak = 0
+                pinchActive = false
+                if (noneStreak >= rearmNeedNoneFrames) armed = true
+            }
+
             is Gesture.Pinch -> {
-                if (nowMs - lastToggleTime < toggleCooldownMs) return@LaunchedEffect
+                noneStreak = 0
+                palmStreak = 0
+                if (!armed || inCooldown) return@LaunchedEffect
 
                 if (!pinchActive) {
                     pinchActive = true
                     pinchStartTime = nowMs
                 } else if (nowMs - pinchStartTime >= pinchHoldMs) {
+                    // Pinch triggers ONCE then disarms until NONE is stable again
                     if (calib.isActive) {
                         val a = currentAngle()
                         if (a != null) {
@@ -230,44 +262,56 @@ private fun CameraScreen() {
                                             capturedDownAngle = a,
                                             message = "Saved calibration: UP=${up.toInt()}°, DOWN=${a.toInt()}°"
                                         )
-                                    } else calib.copy(message = "Missing UP capture, restart calibration.")
+                                    } else {
+                                        calib.copy(message = "Missing UP capture, restart calibration.")
+                                    }
                                 }
                             }
+                            gestureLabel = "Pinch → Capture"
                         } else {
                             calib = calib.copy(message = "No angle detected (ensure joints visible).")
+                            gestureLabel = "Pinch → No angle"
                         }
-
-                        lastToggleTime = nowMs
-                        pinchActive = false
-                        gestureLabel = "Pinch → Capture"
                         gestureShownAt = nowMs
-                        return@LaunchedEffect
+                    } else {
+                        isRunning = !isRunning
+                        gestureLabel = "Pinch → ${if (isRunning) "Start" else "Stop"}"
+                        gestureShownAt = nowMs
                     }
 
-                    isRunning = !isRunning
-                    lastToggleTime = nowMs
+                    lastGestureAt = nowMs
+                    armed = false
                     pinchActive = false
-                    gestureLabel = "Pinch → ${if (isRunning) "Start" else "Stop"}"
-                    gestureShownAt = nowMs
                 }
             }
 
             is Gesture.OpenPalm -> {
+                noneStreak = 0
                 pinchActive = false
-                if (!isRunning && !calib.isActive && nowMs - lastToggleTime >= toggleCooldownMs) {
+
+                // Only allow palm switch when NOT running and NOT calibrating
+                if (isRunning || calib.isActive) {
+                    palmStreak = 0
+                    return@LaunchedEffect
+                }
+
+                if (!armed || inCooldown) return@LaunchedEffect
+
+                palmStreak += 1
+                if (palmStreak >= palmNeedFrames) {
                     modeIndex = (modeIndex + 1) % 3
-                    lastToggleTime = nowMs
                     gestureLabel = "Palm → Switch mode"
                     gestureShownAt = nowMs
+
+                    lastGestureAt = nowMs
+                    armed = false
+                    palmStreak = 0
                 }
             }
-
-            is Gesture.None -> pinchActive = false
         }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // ✅ ONLY a call — NO duplicate CameraPreview function in this file.
         CameraPreview(
             modifier = Modifier.fillMaxSize(),
             onPoseFrame = { poseFrame = it },
