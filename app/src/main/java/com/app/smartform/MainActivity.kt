@@ -13,6 +13,7 @@ import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -69,9 +70,11 @@ private fun CameraScreen() {
     var poseFrame by remember { mutableStateOf<PoseFrame?>(null) }
     var handFrame by remember { mutableStateOf<HandFrame?>(null) }
 
+    // session controls
     var isRunning by remember { mutableStateOf(false) }
     var modeIndex by remember { mutableIntStateOf(0) } // 0=Curl, 1=Squat, 2=Push-up
 
+    // toast-like gesture feedback
     var gestureLabel by remember { mutableStateOf<String?>(null) }
     var gestureShownAt by remember { mutableLongStateOf(0L) }
 
@@ -92,9 +95,11 @@ private fun CameraScreen() {
     val toggleCooldownMs = 1100L
     val handFreshMs = 250L
 
+    // frame freshness
     val now = SystemClock.uptimeMillis()
     val freshHandFrame = handFrame?.takeIf { now - it.timestampMs < handFreshMs }
 
+    // mode mapping
     val mode = when (modeIndex) {
         0 -> ExerciseMode.CURL
         1 -> ExerciseMode.SQUAT
@@ -106,19 +111,30 @@ private fun CameraScreen() {
         else -> "Push-up"
     }
 
+    // calibration datastore
     val store = remember { CalibrationStore(context.applicationContext) }
     val profile by store.profileFlow.collectAsState(initial = CalibrationProfile())
 
+    // rep counter
     val repCounter = remember { RepCounter() }
     var repResult by remember { mutableStateOf(RepResult(0, "IDLE", angle = null)) }
 
+    // posture / form gate
+    val feedback = PostureEvaluator.evaluate(poseFrame, mode)
+    val formOk = feedback.status == "Good form"
+
+    // Effective running: user wants RUNNING, but reps only count when form is OK
+    val effectiveRunning = isRunning && formOk
+
+    // reset reps when switching mode
     LaunchedEffect(modeIndex) {
         repCounter.reset()
         repResult = RepResult(0, "IDLE", angle = null)
     }
 
-    LaunchedEffect(modeIndex, poseFrame, isRunning, profile) {
-        repResult = repCounter.update(mode, poseFrame, isRunning, profile)
+    // update reps (NOTE: use effectiveRunning here)
+    LaunchedEffect(modeIndex, poseFrame, effectiveRunning, profile) {
+        repResult = repCounter.update(mode, poseFrame, effectiveRunning, profile)
     }
 
     // ----- QUALITY TRACKING -----
@@ -138,12 +154,14 @@ private fun CameraScreen() {
         ExerciseMode.PUSHUP -> profile.pushup
     }
 
-    LaunchedEffect(isRunning, repResult.angle) {
-        if (!isRunning) return@LaunchedEffect
+    // track min angle during a rep (only when effectiveRunning)
+    LaunchedEffect(effectiveRunning, repResult.angle) {
+        if (!effectiveRunning) return@LaunchedEffect
         val a = repResult.angle ?: return@LaunchedEffect
         repAngleMin = repAngleMin?.let { minOf(it, a) } ?: a
     }
 
+    // on rep increment => compute quality
     LaunchedEffect(modeIndex, repResult.reps) {
         if (repResult.reps > prevReps) {
             val nowMs = SystemClock.uptimeMillis()
@@ -179,9 +197,8 @@ private fun CameraScreen() {
         sessionAvgScoreSum = 0
     }
 
+    // calibration state
     var calib by remember { mutableStateOf(CalibrationState()) }
-
-    val feedback = PostureEvaluator.evaluate(poseFrame)
 
     fun currentAngle(): Double? = repCounter.currentPrimaryAngle(mode, poseFrame)
 
@@ -202,11 +219,13 @@ private fun CameraScreen() {
                 val downThresh = (maxOf(up, down) - margin).coerceIn(80.0, 180.0)
                 existing.copy(curl = RepThresholds(downThresh, upThresh))
             }
+
             ExerciseMode.SQUAT -> {
                 val downThresh = (minOf(up, down) + margin).coerceIn(40.0, 160.0)
                 val upThresh = (maxOf(up, down) - margin).coerceIn(80.0, 180.0)
                 existing.copy(squat = RepThresholds(downThresh, upThresh))
             }
+
             ExerciseMode.PUSHUP -> {
                 val downThresh = (minOf(up, down) + margin).coerceIn(40.0, 160.0)
                 val upThresh = (maxOf(up, down) - margin).coerceIn(80.0, 180.0)
@@ -215,7 +234,7 @@ private fun CameraScreen() {
         }
     }
 
-    // ✅ Gesture loop (patched)
+    // ✅ Gesture loop (current working logic kept)
     LaunchedEffect(freshHandFrame?.timestampMs) {
         val nowMs = SystemClock.uptimeMillis()
 
@@ -247,6 +266,7 @@ private fun CameraScreen() {
                                     capturedUpAngle = a,
                                     message = "Captured UP (${a.toInt()}°). Now do DOWN pose and pinch-hold."
                                 )
+
                                 CalibrationStep.BASELINE_DOWN -> {
                                     val up = calib.capturedUpAngle
                                     if (up != null) {
@@ -314,6 +334,10 @@ private fun CameraScreen() {
     val showGestureToast = gestureLabel != null && (SystemClock.uptimeMillis() - gestureShownAt) < 900
     val avgScore = if (repResult.reps == 0) 0 else (sessionAvgScoreSum / repResult.reps)
 
+    // Warning banner: too fast (or shallow+fast)
+    val tooFastNow = lastQuality?.verdict?.contains("TOO FAST") == true
+
+    // Debug bottom sheet toggle
     var showDebug by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -329,7 +353,7 @@ private fun CameraScreen() {
                 },
                 actions = {
                     AssistChip(
-                        onClick = { },
+                        onClick = { /* no-op */ },
                         label = { Text(if (isRunning) "RUNNING" else "PAUSED") },
                         leadingIcon = {
                             Icon(
@@ -341,56 +365,90 @@ private fun CameraScreen() {
                     Spacer(Modifier.width(8.dp))
                 }
             )
-        },
-        floatingActionButton = {
-            FloatingActionButton(
-                onClick = { showDebug = true },
-                shape = RoundedCornerShape(18.dp)
-            ) {
-                Icon(Icons.Default.BugReport, contentDescription = "Debug")
-            }
         }
+        // ✅ REMOVED floatingActionButton (was overlapping bottom HUD)
     ) { padding ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
         ) {
+            // Camera + overlays
             CameraPreview(
                 modifier = Modifier.fillMaxSize(),
                 onPoseFrame = { poseFrame = it },
                 onHandFrame = { if (it != null) handFrame = it }
             )
-
             SkeletonOverlay(modifier = Modifier.fillMaxSize(), frame = poseFrame)
             HandOverlay(modifier = Modifier.fillMaxSize(), frame = freshHandFrame)
 
+            // ✅ NEW: Debug chip/button near the top (below app bar), no overlap with bottom UI
+            AssistChip(
+                onClick = { showDebug = true },
+                label = { Text("Debug") },
+                leadingIcon = { Icon(Icons.Default.BugReport, contentDescription = null) },
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 10.dp, end = 12.dp)
+            )
+
+            // Bottom HUD (keeps face area clear)
             Column(
                 modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(horizontal = 14.dp, vertical = 12.dp)
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 14.dp, vertical = 14.dp)
                     .fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                StatsRow(
+                // Form banner (Q1)
+                FormBanner(
+                    status = feedback.status,
+                    details = feedback.details,
+                    score = feedback.score,
+                    isOk = formOk
+                )
+
+                // Speed warning banner
+                AnimatedVisibility(visible = tooFastNow) {
+                    WarningBanner(text = "You're going too fast — slow down for controlled reps.")
+                }
+
+                // Big reps card + reset button near reps (Q2)
+                RepDashboardCard(
                     modeName = modeName,
                     reps = repResult.reps,
                     phase = repResult.phase,
-                    avgScore = avgScore
+                    avgScore = avgScore,
+                    isRunning = isRunning,
+                    effectiveRunning = effectiveRunning,
+                    onReset = {
+                        repCounter.reset()
+                        repResult = RepResult(0, "IDLE", angle = null)
+                        prevReps = 0
+                        repAngleMin = null
+                        lastRepAt = 0L
+                        lastQuality = null
+                        sessionGood = 0
+                        sessionShallow = 0
+                        sessionFast = 0
+                        sessionAvgScoreSum = 0
+                    }
                 )
 
-                lastQuality?.let { q -> QualityCard(q = q) }
+                // Optional: last rep quick card
+                lastQuality?.let { q -> CompactQualityCard(q) }
 
+                // Calibration info
                 AnimatedVisibility(visible = calib.isActive || calib.message.isNotBlank()) {
                     CalibrationBanner(calib = calib)
                 }
             }
 
+            // Small gesture toast
             if (showGestureToast) {
                 Surface(
                     modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 18.dp),
+                        .align(Alignment.Center),
                     tonalElevation = 8.dp,
                     shape = RoundedCornerShape(18.dp)
                 ) {
@@ -401,6 +459,7 @@ private fun CameraScreen() {
                 }
             }
 
+            // Debug bottom sheet
             if (showDebug) {
                 ModalBottomSheet(
                     onDismissRequest = { showDebug = false },
@@ -409,6 +468,8 @@ private fun CameraScreen() {
                     DebugPanel(
                         modeName = modeName,
                         isRunning = isRunning,
+                        formOk = formOk,
+                        effectiveRunning = effectiveRunning,
                         reps = repResult.reps,
                         phase = repResult.phase,
                         angle = repResult.angle,
@@ -421,7 +482,8 @@ private fun CameraScreen() {
                         feedbackScore = feedback.score,
                         feedbackDetails = feedback.details,
                         calib = calib,
-                        repDebug = repResult.debug, // ✅ NEW
+                        repDebug = repResult.debug,
+                        lastQuality = lastQuality,
                         onStartCalibration = {
                             if (!isRunning) {
                                 calib = CalibrationState(
@@ -444,56 +506,135 @@ private fun CameraScreen() {
 }
 
 @Composable
-private fun StatsRow(modeName: String, reps: Int, phase: String, avgScore: Int) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        StatCard("Mode", modeName, Modifier.weight(1f))
-        StatCard("Reps", reps.toString(), Modifier.weight(1f))
-        StatCard("Phase", phase, Modifier.weight(1f))
-        StatCard("Avg", avgScore.toString(), Modifier.weight(1f))
-    }
-}
+private fun FormBanner(status: String, details: String, score: Int, isOk: Boolean) {
+    val container = if (isOk) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.errorContainer
+    val content = if (isOk) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onErrorContainer
 
-@Composable
-private fun StatCard(title: String, value: String, modifier: Modifier = Modifier) {
     Card(
-        modifier = modifier,
         shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
+        colors = CardDefaults.cardColors(containerColor = container.copy(alpha = 0.92f)),
+        modifier = Modifier.fillMaxWidth()
     ) {
-        Column(Modifier.padding(12.dp)) {
-            Text(title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Column(Modifier.padding(14.dp)) {
+            Text(
+                text = if (isOk) "Form OK ✅" else "Form NOT OK ⚠️",
+                style = MaterialTheme.typography.titleMedium,
+                color = content
+            )
             Spacer(Modifier.height(4.dp))
-            Text(value, style = MaterialTheme.typography.titleLarge)
+            Text(
+                text = "$status • $score\n$details",
+                color = content
+            )
+            if (!isOk) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = "Reps will pause until your form is OK.",
+                    color = content,
+                    style = MaterialTheme.typography.labelMedium
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun QualityCard(q: RepQuality) {
+private fun WarningBanner(text: String) {
+    Card(
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.92f)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text(
+            modifier = Modifier.padding(14.dp),
+            text = text,
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            style = MaterialTheme.typography.bodyMedium
+        )
+    }
+}
+
+@Composable
+private fun RepDashboardCard(
+    modeName: String,
+    reps: Int,
+    phase: String,
+    avgScore: Int,
+    isRunning: Boolean,
+    effectiveRunning: Boolean,
+    onReset: () -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier.size(74.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(
+                    progress = { (avgScore.coerceIn(0, 100) / 100f) },
+                    strokeWidth = 6.dp
+                )
+                Text(
+                    text = reps.toString(),
+                    style = MaterialTheme.typography.headlineMedium
+                )
+            }
+
+            Spacer(Modifier.width(14.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Reps", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    text = "$modeName • Phase $phase",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Spacer(Modifier.height(4.dp))
+                val runLabel = when {
+                    !isRunning -> "PAUSED"
+                    effectiveRunning -> "RUNNING"
+                    else -> "RUNNING (paused by form)"
+                }
+                Text(
+                    text = "Avg $avgScore • $runLabel",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            FilledTonalIconButton(
+                onClick = onReset,
+                shape = RoundedCornerShape(16.dp),
+                enabled = reps > 0
+            ) {
+                Icon(Icons.Default.Refresh, contentDescription = "Reset count")
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompactQualityCard(q: RepQuality) {
     Card(
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
         modifier = Modifier.fillMaxWidth()
     ) {
-        Column(Modifier.padding(14.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Last Rep", style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.width(10.dp))
-                AssistChip(onClick = { }, label = { Text(q.verdict) })
-                Spacer(Modifier.weight(1f))
-                Text("Score ${q.score}", style = MaterialTheme.typography.titleMedium)
-            }
-            Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AssistChip(onClick = { }, label = { Text(q.verdict) })
+            Spacer(Modifier.width(10.dp))
             Text("Depth ${q.depthPct}%  •  Tempo ${q.tempoMs}ms", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (q.tips.isNotBlank()) {
-                Spacer(Modifier.height(6.dp))
-                Text(q.tips, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
         }
     }
 }
@@ -521,6 +662,8 @@ private fun CalibrationBanner(calib: CalibrationState) {
 private fun DebugPanel(
     modeName: String,
     isRunning: Boolean,
+    formOk: Boolean,
+    effectiveRunning: Boolean,
     reps: Int,
     phase: String,
     angle: Double?,
@@ -533,7 +676,8 @@ private fun DebugPanel(
     feedbackScore: Int,
     feedbackDetails: String,
     calib: CalibrationState,
-    repDebug: String, // ✅ NEW
+    repDebug: String,
+    lastQuality: RepQuality?,
     onStartCalibration: () -> Unit,
     onResetCalibration: () -> Unit
 ) {
@@ -545,7 +689,10 @@ private fun DebugPanel(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Text("Debug", style = MaterialTheme.typography.titleLarge)
-        Text("Mode: $modeName | ${if (isRunning) "RUNNING" else "PAUSED"}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            "Mode: $modeName | ${if (isRunning) "RUNNING" else "PAUSED"} | formOk=$formOk | effectiveRunning=$effectiveRunning",
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
 
         Card(shape = RoundedCornerShape(16.dp)) {
             Column(Modifier.padding(14.dp)) {
@@ -554,30 +701,32 @@ private fun DebugPanel(
                 Text("Angle: ${angle?.toInt()?.toString() ?: "—"}°")
                 Text("Thresholds: DOWN=${thresholds.downThresh.toInt()}°  UP=${thresholds.upThresh.toInt()}°")
 
+                lastQuality?.let {
+                    Spacer(Modifier.height(10.dp))
+                    HorizontalDivider()
+                    Spacer(Modifier.height(10.dp))
+                    Text("Last rep: ${it.verdict} | score=${it.score} | depth=${it.depthPct}% | tempo=${it.tempoMs}ms")
+                    if (it.tips.isNotBlank()) Text(it.tips, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+
                 Spacer(Modifier.height(10.dp))
                 HorizontalDivider()
                 Spacer(Modifier.height(10.dp))
-
                 Text("Session: avg=$avgScore  good=$sessionGood  shallow=$sessionShallow  fast=$sessionFast")
 
                 Spacer(Modifier.height(10.dp))
                 HorizontalDivider()
                 Spacer(Modifier.height(10.dp))
 
-                // ✅ Step-1 verification: full rep state machine trace
-                Text("Rep debug:", style = MaterialTheme.typography.labelLarge)
-                Text(
-                    repDebug.ifBlank { "—" },
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-
-        Card(shape = RoundedCornerShape(16.dp)) {
-            Column(Modifier.padding(14.dp)) {
                 Text("Posture: $feedbackStatus ($feedbackScore)")
-                Spacer(Modifier.height(6.dp))
                 Text(feedbackDetails, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+                Spacer(Modifier.height(10.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(10.dp))
+
+                Text("Rep debug:", style = MaterialTheme.typography.labelLarge)
+                Text(repDebug.ifBlank { "—" }, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
 
@@ -602,7 +751,9 @@ private fun DebugPanel(
 @Composable
 private fun PermissionScreen(onGrant: () -> Unit) {
     Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {

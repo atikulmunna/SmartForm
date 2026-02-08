@@ -4,6 +4,7 @@ import android.os.SystemClock
 import com.app.smartform.pose.PoseFrame
 import com.app.smartform.pose.PosePoint
 import com.google.mlkit.vision.pose.PoseLandmark
+import com.google.mlkit.vision.pose.PoseLandmark.*
 import kotlin.math.acos
 import kotlin.math.sqrt
 
@@ -184,17 +185,17 @@ class RepCounter {
     private fun elbow(f: PoseFrame, right: Boolean): Double? =
         angle(
             f,
-            if (right) PoseLandmark.RIGHT_SHOULDER else PoseLandmark.LEFT_SHOULDER,
-            if (right) PoseLandmark.RIGHT_ELBOW else PoseLandmark.LEFT_ELBOW,
-            if (right) PoseLandmark.RIGHT_WRIST else PoseLandmark.LEFT_WRIST
+            if (right) RIGHT_SHOULDER else LEFT_SHOULDER,
+            if (right) RIGHT_ELBOW else LEFT_ELBOW,
+            if (right) RIGHT_WRIST else LEFT_WRIST
         )
 
     private fun knee(f: PoseFrame, right: Boolean): Double? =
         angle(
             f,
-            if (right) PoseLandmark.RIGHT_HIP else PoseLandmark.LEFT_HIP,
-            if (right) PoseLandmark.RIGHT_KNEE else PoseLandmark.LEFT_KNEE,
-            if (right) PoseLandmark.RIGHT_ANKLE else PoseLandmark.LEFT_ANKLE
+            if (right) RIGHT_HIP else LEFT_HIP,
+            if (right) RIGHT_KNEE else LEFT_KNEE,
+            if (right) RIGHT_ANKLE else LEFT_ANKLE
         )
 
     private fun angle(f: PoseFrame, a: Int, b: Int, c: Int): Double? {
