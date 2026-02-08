@@ -15,8 +15,8 @@ object GestureDetector {
 
     fun detect(
         frame: HandFrame?,
-        minHandScore: Float = 0.45f,
-        minPalmAreaForOpenPalm: Float = 0.010f
+        minHandScore: Float = 0.55f,
+        minPalmAreaForOpenPalm: Float = 0.016f
     ): Gesture {
         val hand = frame?.hands
             ?.filter { it.landmarks.size >= 21 && it.score >= minHandScore }
@@ -28,16 +28,16 @@ object GestureDetector {
         val wrist = pts[0]
         val thumbTip = pts[4]
         val indexTip = pts[8]
+        val pinkyTip = pts[20]
         val middleMcp = pts[9]
 
         val palmSize = dist(wrist, middleMcp).coerceAtLeast(1e-6f)
 
+        // --- Pinch: keep it permissive ---
         val pinchRatio = dist(thumbTip, indexTip) / palmSize
-
-        // Pinch is allowed even if hand is partially visible.
         if (pinchRatio < 0.32f) return Gesture.Pinch
 
-        // OpenPalm is more prone to false positives → require enough visible area.
+        // --- OpenPalm: make it strict ---
         val area = bboxArea(pts)
         if (area < minPalmAreaForOpenPalm) return Gesture.None
 
@@ -45,7 +45,10 @@ object GestureDetector {
         val avgTipDist = tips.map { dist(it, wrist) }.average().toFloat()
         val openPalmRatio = avgTipDist / palmSize
 
-        return if (openPalmRatio > 1.35f) Gesture.OpenPalm else Gesture.None
+        // extra: require hand "spread" (index ↔ pinky far enough)
+        val spreadRatio = dist(indexTip, pinkyTip) / palmSize
+
+        return if (openPalmRatio > 1.45f && spreadRatio > 1.10f) Gesture.OpenPalm else Gesture.None
     }
 
     private fun dist(a: HandPoint, b: HandPoint): Float {

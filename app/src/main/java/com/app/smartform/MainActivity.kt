@@ -5,12 +5,20 @@ import android.os.Bundle
 import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.FitnessCenter
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.app.smartform.calibration.CalibrationState
 import com.app.smartform.calibration.CalibrationStep
@@ -23,13 +31,7 @@ import com.app.smartform.hand.HandOverlay
 import com.app.smartform.pose.PoseFrame
 import com.app.smartform.pose.PostureEvaluator
 import com.app.smartform.pose.SkeletonOverlay
-import com.app.smartform.reps.CalibrationProfile
-import com.app.smartform.reps.ExerciseMode
-import com.app.smartform.reps.RepCounter
-import com.app.smartform.reps.RepQuality
-import com.app.smartform.reps.RepQualityEvaluator
-import com.app.smartform.reps.RepResult
-import com.app.smartform.reps.RepThresholds
+import com.app.smartform.reps.*
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.PermissionStatus
 import com.google.accompanist.permissions.rememberPermissionState
@@ -58,6 +60,7 @@ private fun AppRoot() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CameraScreen() {
     val context = LocalContext.current
@@ -67,14 +70,30 @@ private fun CameraScreen() {
     var handFrame by remember { mutableStateOf<HandFrame?>(null) }
 
     var isRunning by remember { mutableStateOf(false) }
-    var modeIndex by remember { mutableStateOf(0) } // 0=Curl, 1=Squat, 2=Push-up
+    var modeIndex by remember { mutableIntStateOf(0) } // 0=Curl, 1=Squat, 2=Push-up
 
     var gestureLabel by remember { mutableStateOf<String?>(null) }
     var gestureShownAt by remember { mutableLongStateOf(0L) }
-    val showGesture = gestureLabel != null && (SystemClock.uptimeMillis() - gestureShownAt) < 900
+
+    // ---- Pinch hold (Start/Stop OR Capture) ----
+    var pinchStartTime by remember { mutableLongStateOf(0L) }
+    var pinchActive by remember { mutableStateOf(false) }
+
+    // ---- OpenPalm hold (Switch mode) ----
+    var palmStartTime by remember { mutableLongStateOf(0L) }
+    var palmActive by remember { mutableStateOf(false) }
+
+    // Cooldown for ANY trigger
+    var lastToggleTime by remember { mutableLongStateOf(0L) }
+
+    // Tunables
+    val pinchHoldMs = 1000L
+    val palmHoldMs = 750L
+    val toggleCooldownMs = 1100L
+    val handFreshMs = 250L
 
     val now = SystemClock.uptimeMillis()
-    val freshHandFrame = handFrame?.takeIf { now - it.timestampMs < 200 }
+    val freshHandFrame = handFrame?.takeIf { now - it.timestampMs < handFreshMs }
 
     val mode = when (modeIndex) {
         0 -> ExerciseMode.CURL
@@ -87,11 +106,9 @@ private fun CameraScreen() {
         else -> "Push-up"
     }
 
-    // DataStore calibration
     val store = remember { CalibrationStore(context.applicationContext) }
     val profile by store.profileFlow.collectAsState(initial = CalibrationProfile())
 
-    // Rep counter
     val repCounter = remember { RepCounter() }
     var repResult by remember { mutableStateOf(RepResult(0, "IDLE", angle = null)) }
 
@@ -104,7 +121,7 @@ private fun CameraScreen() {
         repResult = repCounter.update(mode, poseFrame, isRunning, profile)
     }
 
-    // ---- QUALITY TRACKING ----
+    // ----- QUALITY TRACKING -----
     var prevReps by remember { mutableIntStateOf(0) }
     var repAngleMin by remember { mutableStateOf<Double?>(null) }
     var lastRepAt by remember { mutableLongStateOf(0L) }
@@ -141,9 +158,11 @@ private fun CameraScreen() {
                 "GOOD", "EXCELLENT" -> sessionGood += 1
                 "SHALLOW" -> sessionShallow += 1
                 "TOO FAST" -> sessionFast += 1
-                "TOO FAST + SHALLOW" -> { sessionFast += 1; sessionShallow += 1 }
+                "TOO FAST + SHALLOW" -> {
+                    sessionFast += 1
+                    sessionShallow += 1
+                }
             }
-
             repAngleMin = null
         }
         prevReps = repResult.reps
@@ -160,7 +179,6 @@ private fun CameraScreen() {
         sessionAvgScoreSum = 0
     }
 
-    // Calibration state
     var calib by remember { mutableStateOf(CalibrationState()) }
 
     val feedback = PostureEvaluator.evaluate(poseFrame)
@@ -197,52 +215,29 @@ private fun CameraScreen() {
         }
     }
 
-    // ---- Gesture state machine (robust + no random palm switches) ----
-    var armed by remember { mutableStateOf(true) }
-    var lastGestureAt by remember { mutableLongStateOf(0L) }
-    val gestureCooldownMs = 1000L
-
-    // Pinch hold
-    var pinchActive by remember { mutableStateOf(false) }
-    var pinchStartTime by remember { mutableLongStateOf(0L) }
-    val pinchHoldMs = 1000L
-
-    // Open palm stability
-    var palmStreak by remember { mutableIntStateOf(0) }
-    val palmNeedFrames = 4
-
-    // Rearm on NONE
-    var noneStreak by remember { mutableIntStateOf(0) }
-    val rearmNeedNoneFrames = 3
-
+    // ✅ Gesture loop (patched)
     LaunchedEffect(freshHandFrame?.timestampMs) {
         val nowMs = SystemClock.uptimeMillis()
-        val inCooldown = (nowMs - lastGestureAt) < gestureCooldownMs
 
         val g = GestureDetector.detect(
             freshHandFrame,
-            minHandScore = 0.60f,
-            minPalmAreaForOpenPalm = 0.020f
+            minHandScore = 0.55f,
+            minPalmAreaForOpenPalm = 0.016f
         )
 
-        when (g) {
-            is Gesture.None -> {
-                noneStreak += 1
-                palmStreak = 0
-                pinchActive = false
-                if (noneStreak >= rearmNeedNoneFrames) armed = true
-            }
+        fun cooldownOk(): Boolean = (nowMs - lastToggleTime) >= toggleCooldownMs
 
+        when (g) {
             is Gesture.Pinch -> {
-                noneStreak = 0
-                palmStreak = 0
-                if (!armed || inCooldown) return@LaunchedEffect
+                palmActive = false
+                palmStartTime = 0L
+
+                if (!cooldownOk()) return@LaunchedEffect
 
                 if (!pinchActive) {
                     pinchActive = true
                     pinchStartTime = nowMs
                 } else if (nowMs - pinchStartTime >= pinchHoldMs) {
-                    // Pinch triggers ONCE then disarms until NONE is stable again
                     if (calib.isActive) {
                         val a = currentAngle()
                         if (a != null) {
@@ -260,134 +255,345 @@ private fun CameraScreen() {
                                         calib.copy(
                                             isActive = false,
                                             capturedDownAngle = a,
-                                            message = "Saved calibration: UP=${up.toInt()}°, DOWN=${a.toInt()}°"
+                                            message = "Saved: UP=${up.toInt()}°, DOWN=${a.toInt()}°"
                                         )
-                                    } else {
-                                        calib.copy(message = "Missing UP capture, restart calibration.")
-                                    }
+                                    } else calib.copy(message = "Missing UP capture, restart calibration.")
                                 }
                             }
-                            gestureLabel = "Pinch → Capture"
                         } else {
                             calib = calib.copy(message = "No angle detected (ensure joints visible).")
-                            gestureLabel = "Pinch → No angle"
                         }
+
+                        lastToggleTime = nowMs
+                        pinchActive = false
+                        gestureLabel = "Pinch → Capture"
                         gestureShownAt = nowMs
-                    } else {
-                        isRunning = !isRunning
-                        gestureLabel = "Pinch → ${if (isRunning) "Start" else "Stop"}"
-                        gestureShownAt = nowMs
+                        return@LaunchedEffect
                     }
 
-                    lastGestureAt = nowMs
-                    armed = false
+                    isRunning = !isRunning
+                    lastToggleTime = nowMs
                     pinchActive = false
+                    gestureLabel = "Pinch → ${if (isRunning) "Start" else "Stop"}"
+                    gestureShownAt = nowMs
                 }
             }
 
             is Gesture.OpenPalm -> {
-                noneStreak = 0
                 pinchActive = false
+                pinchStartTime = 0L
 
-                // Only allow palm switch when NOT running and NOT calibrating
                 if (isRunning || calib.isActive) {
-                    palmStreak = 0
+                    palmActive = false
+                    palmStartTime = 0L
                     return@LaunchedEffect
                 }
+                if (!cooldownOk()) return@LaunchedEffect
 
-                if (!armed || inCooldown) return@LaunchedEffect
-
-                palmStreak += 1
-                if (palmStreak >= palmNeedFrames) {
+                if (!palmActive) {
+                    palmActive = true
+                    palmStartTime = nowMs
+                } else if (nowMs - palmStartTime >= palmHoldMs) {
                     modeIndex = (modeIndex + 1) % 3
+                    lastToggleTime = nowMs
+                    palmActive = false
                     gestureLabel = "Palm → Switch mode"
                     gestureShownAt = nowMs
-
-                    lastGestureAt = nowMs
-                    armed = false
-                    palmStreak = 0
                 }
+            }
+
+            is Gesture.None -> {
+                pinchActive = false
+                palmActive = false
+                pinchStartTime = 0L
+                palmStartTime = 0L
             }
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        CameraPreview(
-            modifier = Modifier.fillMaxSize(),
-            onPoseFrame = { poseFrame = it },
-            onHandFrame = { hf ->
-                if (hf != null) handFrame = hf
+    val showGestureToast = gestureLabel != null && (SystemClock.uptimeMillis() - gestureShownAt) < 900
+    val avgScore = if (repResult.reps == 0) 0 else (sessionAvgScoreSum / repResult.reps)
+
+    var showDebug by remember { mutableStateOf(false) }
+
+    Scaffold(
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = { Text("SmartForm", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                navigationIcon = {
+                    Icon(
+                        imageVector = Icons.Default.FitnessCenter,
+                        contentDescription = null,
+                        modifier = Modifier.padding(start = 12.dp)
+                    )
+                },
+                actions = {
+                    AssistChip(
+                        onClick = { },
+                        label = { Text(if (isRunning) "RUNNING" else "PAUSED") },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = if (isRunning) Icons.Default.PlayArrow else Icons.Default.Pause,
+                                contentDescription = null
+                            )
+                        }
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
+            )
+        },
+        floatingActionButton = {
+            FloatingActionButton(
+                onClick = { showDebug = true },
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Icon(Icons.Default.BugReport, contentDescription = "Debug")
             }
-        )
-
-        SkeletonOverlay(modifier = Modifier.fillMaxSize(), frame = poseFrame)
-        HandOverlay(modifier = Modifier.fillMaxSize(), frame = freshHandFrame)
-
-        Surface(
+        }
+    ) { padding ->
+        Box(
             modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(12.dp),
-            tonalElevation = 2.dp
+                .fillMaxSize()
+                .padding(padding)
         ) {
-            Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                val avgScore = if (repResult.reps == 0) 0 else (sessionAvgScoreSum / repResult.reps)
+            CameraPreview(
+                modifier = Modifier.fillMaxSize(),
+                onPoseFrame = { poseFrame = it },
+                onHandFrame = { if (it != null) handFrame = it }
+            )
 
-                Text(
-                    text =
-                        "Mode: $modeName | ${if (isRunning) "RUNNING" else "PAUSED"}\n" +
-                                "Reps: ${repResult.reps} | Phase: ${repResult.phase}\n" +
-                                "Session: avg=$avgScore good=$sessionGood shallow=$sessionShallow fast=$sessionFast\n" +
-                                "${feedback.status} (${feedback.score})\n" +
-                                feedback.details
+            SkeletonOverlay(modifier = Modifier.fillMaxSize(), frame = poseFrame)
+            HandOverlay(modifier = Modifier.fillMaxSize(), frame = freshHandFrame)
+
+            Column(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(horizontal = 14.dp, vertical = 12.dp)
+                    .fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                StatsRow(
+                    modeName = modeName,
+                    reps = repResult.reps,
+                    phase = repResult.phase,
+                    avgScore = avgScore
                 )
 
-                lastQuality?.let { q ->
-                    Spacer(Modifier.height(6.dp))
-                    Text("Last rep: ${q.verdict} | score=${q.score} | depth=${q.depthPct}% | tempo=${q.tempoMs}ms")
-                    Text(q.tips)
+                lastQuality?.let { q -> QualityCard(q = q) }
+
+                AnimatedVisibility(visible = calib.isActive || calib.message.isNotBlank()) {
+                    CalibrationBanner(calib = calib)
                 }
+            }
 
-                if (calib.isActive) {
-                    Spacer(Modifier.height(8.dp))
-                    Text("CALIBRATING: ${calib.mode} | Step: ${calib.step}\n${calib.message}")
-                } else if (calib.message.isNotBlank()) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(calib.message)
+            if (showGestureToast) {
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 18.dp),
+                    tonalElevation = 8.dp,
+                    shape = RoundedCornerShape(18.dp)
+                ) {
+                    Text(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        text = gestureLabel ?: ""
+                    )
                 }
+            }
 
-                if (!isRunning) {
-                    Spacer(Modifier.height(10.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = {
-                            calib = CalibrationState(
-                                isActive = true,
-                                mode = mode,
-                                step = CalibrationStep.BASELINE_UP,
-                                message = "Do UP pose for $modeName and pinch-hold to capture."
-                            )
-                        }) { Text("Calibrate") }
-
-                        OutlinedButton(onClick = {
+            if (showDebug) {
+                ModalBottomSheet(
+                    onDismissRequest = { showDebug = false },
+                    dragHandle = { BottomSheetDefaults.DragHandle() }
+                ) {
+                    DebugPanel(
+                        modeName = modeName,
+                        isRunning = isRunning,
+                        reps = repResult.reps,
+                        phase = repResult.phase,
+                        angle = repResult.angle,
+                        thresholds = thresholds,
+                        avgScore = avgScore,
+                        sessionGood = sessionGood,
+                        sessionShallow = sessionShallow,
+                        sessionFast = sessionFast,
+                        feedbackStatus = feedback.status,
+                        feedbackScore = feedback.score,
+                        feedbackDetails = feedback.details,
+                        calib = calib,
+                        repDebug = repResult.debug, // ✅ NEW
+                        onStartCalibration = {
+                            if (!isRunning) {
+                                calib = CalibrationState(
+                                    isActive = true,
+                                    mode = mode,
+                                    step = CalibrationStep.BASELINE_UP,
+                                    message = "Do UP pose for $modeName and pinch-hold to capture."
+                                )
+                            }
+                        },
+                        onResetCalibration = {
                             scope.launch { store.resetToDefaults() }
                             calib = calib.copy(isActive = false, message = "Reset calibration to defaults.")
-                        }) { Text("Reset") }
-                    }
+                        }
+                    )
                 }
             }
         }
+    }
+}
 
-        if (showGesture) {
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 24.dp),
-                tonalElevation = 6.dp,
-                shape = MaterialTheme.shapes.large
-            ) {
+@Composable
+private fun StatsRow(modeName: String, reps: Int, phase: String, avgScore: Int) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        StatCard("Mode", modeName, Modifier.weight(1f))
+        StatCard("Reps", reps.toString(), Modifier.weight(1f))
+        StatCard("Phase", phase, Modifier.weight(1f))
+        StatCard("Avg", avgScore.toString(), Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun StatCard(title: String, value: String, modifier: Modifier = Modifier) {
+    Card(
+        modifier = modifier,
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
+    ) {
+        Column(Modifier.padding(12.dp)) {
+            Text(title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(4.dp))
+            Text(value, style = MaterialTheme.typography.titleLarge)
+        }
+    }
+}
+
+@Composable
+private fun QualityCard(q: RepQuality) {
+    Card(
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Last Rep", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.width(10.dp))
+                AssistChip(onClick = { }, label = { Text(q.verdict) })
+                Spacer(Modifier.weight(1f))
+                Text("Score ${q.score}", style = MaterialTheme.typography.titleMedium)
+            }
+            Spacer(Modifier.height(8.dp))
+            Text("Depth ${q.depthPct}%  •  Tempo ${q.tempoMs}ms", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (q.tips.isNotBlank()) {
+                Spacer(Modifier.height(6.dp))
+                Text(q.tips, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CalibrationBanner(calib: CalibrationState) {
+    Card(
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.92f)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            val title = if (calib.isActive) "Calibration Active" else "Calibration"
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = if (calib.isActive) "Step: ${calib.step}\n${calib.message}" else calib.message,
+                color = MaterialTheme.colorScheme.onTertiaryContainer
+            )
+        }
+    }
+}
+
+@Composable
+private fun DebugPanel(
+    modeName: String,
+    isRunning: Boolean,
+    reps: Int,
+    phase: String,
+    angle: Double?,
+    thresholds: RepThresholds,
+    avgScore: Int,
+    sessionGood: Int,
+    sessionShallow: Int,
+    sessionFast: Int,
+    feedbackStatus: String,
+    feedbackScore: Int,
+    feedbackDetails: String,
+    calib: CalibrationState,
+    repDebug: String, // ✅ NEW
+    onStartCalibration: () -> Unit,
+    onResetCalibration: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .padding(bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text("Debug", style = MaterialTheme.typography.titleLarge)
+        Text("Mode: $modeName | ${if (isRunning) "RUNNING" else "PAUSED"}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+        Card(shape = RoundedCornerShape(16.dp)) {
+            Column(Modifier.padding(14.dp)) {
+                Text("Reps: $reps   Phase: $phase")
+                Spacer(Modifier.height(6.dp))
+                Text("Angle: ${angle?.toInt()?.toString() ?: "—"}°")
+                Text("Thresholds: DOWN=${thresholds.downThresh.toInt()}°  UP=${thresholds.upThresh.toInt()}°")
+
+                Spacer(Modifier.height(10.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(10.dp))
+
+                Text("Session: avg=$avgScore  good=$sessionGood  shallow=$sessionShallow  fast=$sessionFast")
+
+                Spacer(Modifier.height(10.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(10.dp))
+
+                // ✅ Step-1 verification: full rep state machine trace
+                Text("Rep debug:", style = MaterialTheme.typography.labelLarge)
                 Text(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                    text = gestureLabel ?: ""
+                    repDebug.ifBlank { "—" },
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+        }
+
+        Card(shape = RoundedCornerShape(16.dp)) {
+            Column(Modifier.padding(14.dp)) {
+                Text("Posture: $feedbackStatus ($feedbackScore)")
+                Spacer(Modifier.height(6.dp))
+                Text(feedbackDetails, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+
+        Card(shape = RoundedCornerShape(16.dp)) {
+            Column(Modifier.padding(14.dp)) {
+                Text("Calibration", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    if (calib.isActive) "ACTIVE: ${calib.step}\n${calib.message}" else calib.message.ifBlank { "Not running." },
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(onClick = onStartCalibration, enabled = !isRunning) { Text("Calibrate") }
+                    OutlinedButton(onClick = onResetCalibration) { Text("Reset") }
+                }
             }
         }
     }
@@ -396,9 +602,7 @@ private fun CameraScreen() {
 @Composable
 private fun PermissionScreen(onGrant: () -> Unit) {
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
+        modifier = Modifier.fillMaxSize().padding(24.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {

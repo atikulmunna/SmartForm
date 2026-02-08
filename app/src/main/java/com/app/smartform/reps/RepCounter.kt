@@ -9,9 +9,17 @@ import kotlin.math.sqrt
 
 data class RepResult(
     val reps: Int,
-    val phase: String,        // "UP" / "DOWN" / "IDLE"
-    val debug: String = "",
-    val angle: Double? = null
+    val phase: String, // "UP" / "DOWN" / "IDLE"
+    val angle: Double? = null,          // EMA-smoothed primary angle
+    val rawAngle: Double? = null,       // raw angle before EMA
+    val wantDown: Boolean? = null,
+    val wantUp: Boolean? = null,
+    val downThresh: Double? = null,
+    val upThresh: Double? = null,
+    val inDown: Boolean? = null,
+    val streak: Int = 0,
+    val canMove: Boolean? = null,
+    val debug: String = ""
 )
 
 class RepCounter {
@@ -39,7 +47,16 @@ class RepCounter {
         profile: CalibrationProfile
     ): RepResult {
         val s = states.getOrPut(mode) { State() }
-        if (frame == null) return RepResult(s.reps, s.phase, debug = "no-frame", angle = null)
+
+        if (frame == null) {
+            return RepResult(
+                reps = s.reps,
+                phase = s.phase,
+                debug = "no-frame",
+                inDown = s.inDown,
+                streak = s.streak
+            )
+        }
 
         val thresholds = when (mode) {
             ExerciseMode.CURL -> profile.curl
@@ -47,28 +64,65 @@ class RepCounter {
             ExerciseMode.PUSHUP -> profile.pushup
         }
 
-        val rawAngle = currentPrimaryAngle(mode, frame)
-            ?: return RepResult(s.reps, s.phase, debug = "missing-joints", angle = null)
+        val raw = currentPrimaryAngle(mode, frame)
+            ?: return RepResult(
+                reps = s.reps,
+                phase = s.phase,
+                debug = "missing-joints",
+                inDown = s.inDown,
+                streak = s.streak,
+                downThresh = thresholds.downThresh,
+                upThresh = thresholds.upThresh
+            )
 
-        val angle = smoothEma(s, rawAngle, alpha = 0.35)
+        val ema = smoothEma(s, raw, alpha = 0.35)
 
         val now = SystemClock.uptimeMillis()
-        val minGapMs = 400L
-        val confirmFrames = 2
+        val minGapMs = 450L
+        val confirmFrames = 3
+        val canMove = (now - s.lastTransitionMs) > minGapMs
 
-        val canMove = now - s.lastTransitionMs > minGapMs
+        // --- Hysteresis pads (degrees) ---
+        // Enter DOWN must be a bit "more down"
+        // Exit DOWN (go UP) can be a bit easier
+        val enterPad = 6.0
+        val exitPad = 6.0
 
-        // Note:
-        // - CURL: DOWN=extended(high angle), UP=flexed(low angle)
-        // - SQUAT/PUSHUP: DOWN=bent(low angle), UP=extended(high angle)
-        val wantDown = when (mode) {
-            ExerciseMode.CURL -> angle > thresholds.downThresh
-            else -> angle < thresholds.downThresh
+        // Semantics:
+        // - CURL: DOWN = extended (high angle), UP = flexed (low angle)
+        // - SQUAT/PUSHUP: DOWN = bent (low angle), UP = extended (high angle)
+        val (downEnter, upExit) = when (mode) {
+            ExerciseMode.CURL -> {
+                val downEnter = thresholds.downThresh + enterPad     // need a bit MORE extension to count as DOWN
+                val upExit = thresholds.upThresh - exitPad           // allow a bit LESS flex to return UP
+                downEnter to upExit
+            }
+            else -> {
+                val downEnter = thresholds.downThresh - enterPad     // need a bit MORE bend (lower) to count as DOWN
+                val upExit = thresholds.upThresh - exitPad           // allow a bit LESS extension to return UP
+                downEnter to upExit
+            }
         }
 
-        val wantUp = when (mode) {
-            ExerciseMode.CURL -> angle < thresholds.upThresh
-            else -> angle > thresholds.upThresh
+        // Determine “wantDown / wantUp” using hysteresis + current state
+        val wantDown = if (!s.inDown) {
+            when (mode) {
+                ExerciseMode.CURL -> ema > downEnter
+                else -> ema < downEnter
+            }
+        } else {
+            // already in down; don’t care about re-entering
+            false
+        }
+
+        val wantUp = if (s.inDown) {
+            when (mode) {
+                ExerciseMode.CURL -> ema < upExit
+                else -> ema > upExit
+            }
+        } else {
+            // already up; don’t care about re-exiting
+            false
         }
 
         if (!s.inDown) {
@@ -99,29 +153,33 @@ class RepCounter {
             }
         }
 
+        val gap = now - s.lastTransitionMs
+
         return RepResult(
             reps = s.reps,
             phase = s.phase,
-            debug = "raw=${rawAngle.toInt()} ema=${angle.toInt()} down=${thresholds.downThresh.toInt()} up=${thresholds.upThresh.toInt()}",
-            angle = angle
+            angle = ema,
+            rawAngle = raw,
+            wantDown = wantDown,
+            wantUp = wantUp,
+            downThresh = thresholds.downThresh,
+            upThresh = thresholds.upThresh,
+            inDown = s.inDown,
+            streak = s.streak,
+            canMove = canMove,
+            debug = "raw=${raw.toInt()} ema=${ema.toInt()} gap=${gap}ms " +
+                    "downEnter=${downEnter.toInt()} upExit=${upExit.toInt()}"
         )
     }
 
     fun currentPrimaryAngle(mode: ExerciseMode, frame: PoseFrame?): Double? {
         if (frame == null) return null
         return when (mode) {
-            ExerciseMode.CURL ->
-                best(elbow(frame, true), elbow(frame, false))
-
-            ExerciseMode.SQUAT ->
-                avg(knee(frame, true), knee(frame, false))
-
-            ExerciseMode.PUSHUP ->
-                avg(elbow(frame, true), elbow(frame, false))
+            ExerciseMode.CURL -> best(elbow(frame, true), elbow(frame, false))
+            ExerciseMode.SQUAT -> avg(knee(frame, true), knee(frame, false))
+            ExerciseMode.PUSHUP -> avg(elbow(frame, true), elbow(frame, false))
         }
     }
-
-    /* ---------- Geometry ---------- */
 
     private fun elbow(f: PoseFrame, right: Boolean): Double? =
         angle(
@@ -144,8 +202,9 @@ class RepCounter {
         val pb = f.points[b] ?: return null
         val pc = f.points[c] ?: return null
 
-        if (pa.inFrameLikelihood < 0.4f || pb.inFrameLikelihood < 0.4f || pc.inFrameLikelihood < 0.4f)
+        if (pa.inFrameLikelihood < 0.45f || pb.inFrameLikelihood < 0.45f || pc.inFrameLikelihood < 0.45f) {
             return null
+        }
 
         return angleDeg(pa, pb, pc)
     }
@@ -175,17 +234,15 @@ class RepCounter {
         return s.ema
     }
 
-    private fun best(a: Double?, b: Double?): Double? =
-        when {
-            a == null -> b
-            b == null -> a
-            else -> a
-        }
+    private fun best(a: Double?, b: Double?): Double? = when {
+        a == null -> b
+        b == null -> a
+        else -> a
+    }
 
-    private fun avg(a: Double?, b: Double?): Double? =
-        when {
-            a == null -> b
-            b == null -> a
-            else -> (a + b) / 2.0
-        }
+    private fun avg(a: Double?, b: Double?): Double? = when {
+        a == null -> b
+        b == null -> a
+        else -> (a + b) / 2.0
+    }
 }

@@ -16,8 +16,7 @@ object RepQualityEvaluator {
         thresholds: RepThresholds,
         tempoMs: Long
     ): RepQuality {
-        // For all modes here: deeper rep => smaller angle.
-        // We treat thresholds.downThresh as "deep enough" and upThresh as "fully up".
+        // Depth: smaller angle => deeper (for your current design)
         val down = thresholds.downThresh
         val up = thresholds.upThresh
 
@@ -29,37 +28,52 @@ object RepQualityEvaluator {
             pct.coerceIn(0.0, 100.0).toInt()
         }
 
-        val tooFast = tempoMs in 1..650
-        val okTempo = tempoMs == 0L || tempoMs >= 650
+        // -------- Tempo bands (per-mode, conservative) --------
+        // These are rep-to-rep times (your app measures time between rep increments).
+        // If you want stricter, raise the "tooFast" thresholds.
+        val (tooFastMax, goodMin, tooSlowMin) = when (mode) {
+            ExerciseMode.SQUAT -> Triple(1400L, 1400L, 5000L)
+            ExerciseMode.PUSHUP -> Triple(1700L, 1700L, 6500L)
+            ExerciseMode.CURL -> Triple(1200L, 1200L, 4500L)
+        }
+
+        val hasTempo = tempoMs > 0L
+        val tooFast = hasTempo && tempoMs < tooFastMax
+        val tooSlow = hasTempo && tempoMs > tooSlowMin
 
         val deepEnough = depthPct >= 70
         val excellentDepth = depthPct >= 90
 
-        val score = buildScore(depthPct, okTempo)
+        // Score: depth is base, tempo penalties applied on top
+        var score = depthPct
+        if (tooFast) score -= 30
+        if (tooSlow) score -= 10
+        score = score.coerceIn(0, 100)
+
         val verdict = when {
             repAngleMin == null -> "NO DATA"
             tooFast && !deepEnough -> "TOO FAST + SHALLOW"
             tooFast -> "TOO FAST"
             !deepEnough -> "SHALLOW"
-            excellentDepth -> "EXCELLENT"
+            excellentDepth && !tooSlow -> "EXCELLENT"
             else -> "GOOD"
         }
 
         val tips = when (verdict) {
-            "NO DATA" -> "Keep more joints in frame."
-            "TOO FAST + SHALLOW" -> "Slow down and go deeper."
-            "TOO FAST" -> "Slow the tempo a bit."
+            "NO DATA" -> "Keep more joints in frame (hips/knees/ankles visible)."
+            "TOO FAST + SHALLOW" -> "You're going too fast and not deep enough—slow down and sit lower."
+            "TOO FAST" -> "You're going too fast—slow down and control the movement."
             "SHALLOW" -> "Go deeper for a full rep."
-            "EXCELLENT" -> "Great depth—keep it consistent."
-            else -> "Nice rep."
+            "EXCELLENT" -> if (tooSlow) "Great depth—try a slightly steadier pace." else "Great depth—keep it consistent."
+            else -> if (tooSlow) "Good rep—try a slightly quicker cadence." else "Nice rep."
         }
 
-        return RepQuality(depthPct, tempoMs, score, verdict, tips)
-    }
-
-    private fun buildScore(depthPct: Int, okTempo: Boolean): Int {
-        var s = depthPct
-        if (!okTempo) s -= 20
-        return s.coerceIn(0, 100)
+        return RepQuality(
+            depthPct = depthPct,
+            tempoMs = tempoMs,
+            score = score,
+            verdict = verdict,
+            tips = tips
+        )
     }
 }
