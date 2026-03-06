@@ -1,3 +1,5 @@
+// MainActivity.kt  (Option B: uses SessionStats + RepTimeline + SessionSummaryScreen)
+// Paste-replace this whole file.
 package com.app.smartform
 
 import android.Manifest
@@ -6,7 +8,17 @@ import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BugReport
@@ -14,8 +26,36 @@ import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.BottomSheetDefaults
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -32,7 +72,16 @@ import com.app.smartform.hand.HandOverlay
 import com.app.smartform.pose.PoseFrame
 import com.app.smartform.pose.PostureEvaluator
 import com.app.smartform.pose.SkeletonOverlay
-import com.app.smartform.reps.*
+import com.app.smartform.reps.CalibrationProfile
+import com.app.smartform.reps.ExerciseMode
+import com.app.smartform.reps.RepCounter
+import com.app.smartform.reps.RepQuality
+import com.app.smartform.reps.RepQualityEvaluator
+import com.app.smartform.reps.RepResult
+import com.app.smartform.reps.RepThresholds
+import com.app.smartform.session.SessionStats
+import com.app.smartform.ui.RepTimeline
+import com.app.smartform.ui.SessionSummaryScreen
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.PermissionStatus
 import com.google.accompanist.permissions.rememberPermissionState
@@ -148,6 +197,9 @@ private fun CameraScreen() {
     var sessionFast by remember { mutableIntStateOf(0) }
     var sessionAvgScoreSum by remember { mutableIntStateOf(0) }
 
+    // ✅ Timeline (what RepTimeline.kt expects)
+    val repTimeline = remember { mutableStateListOf<RepQuality>() }
+
     val thresholds = when (mode) {
         ExerciseMode.CURL -> profile.curl
         ExerciseMode.SQUAT -> profile.squat
@@ -161,7 +213,7 @@ private fun CameraScreen() {
         repAngleMin = repAngleMin?.let { minOf(it, a) } ?: a
     }
 
-    // on rep increment => compute quality
+    // on rep increment => compute quality + push into timeline
     LaunchedEffect(modeIndex, repResult.reps) {
         if (repResult.reps > prevReps) {
             val nowMs = SystemClock.uptimeMillis()
@@ -181,6 +233,10 @@ private fun CameraScreen() {
                     sessionShallow += 1
                 }
             }
+
+            repTimeline.add(q)
+            if (repTimeline.size > 60) repTimeline.removeAt(0)
+
             repAngleMin = null
         }
         prevReps = repResult.reps
@@ -195,6 +251,7 @@ private fun CameraScreen() {
         sessionShallow = 0
         sessionFast = 0
         sessionAvgScoreSum = 0
+        repTimeline.clear()
     }
 
     // calibration state
@@ -340,6 +397,37 @@ private fun CameraScreen() {
     // Debug bottom sheet toggle
     var showDebug by remember { mutableStateOf(false) }
 
+    // ✅ Summary snapshot to avoid "all zeroes"
+    var summaryStats by remember { mutableStateOf<SessionStats?>(null) }
+
+    fun hardResetSession() {
+        repCounter.reset()
+        repResult = RepResult(0, "IDLE", angle = null)
+        prevReps = 0
+        repAngleMin = null
+        lastRepAt = 0L
+        lastQuality = null
+        sessionGood = 0
+        sessionShallow = 0
+        sessionFast = 0
+        sessionAvgScoreSum = 0
+        repTimeline.clear()
+    }
+
+    fun endSessionNow() {
+        isRunning = false
+        val repsNow = repResult.reps
+        val avgNow = if (repsNow == 0) 0 else (sessionAvgScoreSum / repsNow)
+        summaryStats = SessionStats(
+            reps = repsNow,
+            avgScore = avgNow,
+            good = sessionGood,
+            shallow = sessionShallow,
+            fast = sessionFast,
+            repTimeline = repTimeline.toList()
+        )
+    }
+
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
@@ -366,7 +454,6 @@ private fun CameraScreen() {
                 }
             )
         }
-        // ✅ REMOVED floatingActionButton (was overlapping bottom HUD)
     ) { padding ->
         Box(
             modifier = Modifier
@@ -382,7 +469,7 @@ private fun CameraScreen() {
             SkeletonOverlay(modifier = Modifier.fillMaxSize(), frame = poseFrame)
             HandOverlay(modifier = Modifier.fillMaxSize(), frame = freshHandFrame)
 
-            // ✅ NEW: Debug chip/button near the top (below app bar), no overlap with bottom UI
+            // Debug chip/button near the top (below app bar)
             AssistChip(
                 onClick = { showDebug = true },
                 label = { Text("Debug") },
@@ -392,7 +479,7 @@ private fun CameraScreen() {
                     .padding(top = 10.dp, end = 12.dp)
             )
 
-            // Bottom HUD (keeps face area clear)
+            // Bottom HUD
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -400,7 +487,6 @@ private fun CameraScreen() {
                     .fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                // Form banner (Q1)
                 FormBanner(
                     status = feedback.status,
                     details = feedback.details,
@@ -408,12 +494,10 @@ private fun CameraScreen() {
                     isOk = formOk
                 )
 
-                // Speed warning banner
                 AnimatedVisibility(visible = tooFastNow) {
                     WarningBanner(text = "You're going too fast — slow down for controlled reps.")
                 }
 
-                // Big reps card + reset button near reps (Q2)
                 RepDashboardCard(
                     modeName = modeName,
                     reps = repResult.reps,
@@ -421,24 +505,28 @@ private fun CameraScreen() {
                     avgScore = avgScore,
                     isRunning = isRunning,
                     effectiveRunning = effectiveRunning,
-                    onReset = {
-                        repCounter.reset()
-                        repResult = RepResult(0, "IDLE", angle = null)
-                        prevReps = 0
-                        repAngleMin = null
-                        lastRepAt = 0L
-                        lastQuality = null
-                        sessionGood = 0
-                        sessionShallow = 0
-                        sessionFast = 0
-                        sessionAvgScoreSum = 0
-                    }
+                    onReset = { hardResetSession() }
                 )
 
-                // Optional: last rep quick card
                 lastQuality?.let { q -> CompactQualityCard(q) }
 
-                // Calibration info
+                // ✅ External RepTimeline (subtle) — ABOVE calibration banner
+                RepTimeline(
+                    reps = repTimeline,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                // ✅ End session button (manual) — ABOVE calibration banner
+                FilledTonalButton(
+                    onClick = { endSessionNow() },
+                    shape = RoundedCornerShape(18.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Stop, contentDescription = null)
+                    Spacer(Modifier.width(10.dp))
+                    Text("End Session")
+                }
+
                 AnimatedVisibility(visible = calib.isActive || calib.message.isNotBlank()) {
                     CalibrationBanner(calib = calib)
                 }
@@ -447,8 +535,7 @@ private fun CameraScreen() {
             // Small gesture toast
             if (showGestureToast) {
                 Surface(
-                    modifier = Modifier
-                        .align(Alignment.Center),
+                    modifier = Modifier.align(Alignment.Center),
                     tonalElevation = 8.dp,
                     shape = RoundedCornerShape(18.dp)
                 ) {
@@ -501,14 +588,27 @@ private fun CameraScreen() {
                     )
                 }
             }
+
+            // ✅ Full-screen Summary (no nav) — uses external SessionSummaryScreen + SessionStats
+            summaryStats?.let { stats ->
+                SessionSummaryScreen(
+                    stats = stats,
+                    onDone = {
+                        hardResetSession()
+                        summaryStats = null
+                    }
+                )
+            }
         }
     }
 }
 
 @Composable
 private fun FormBanner(status: String, details: String, score: Int, isOk: Boolean) {
-    val container = if (isOk) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.errorContainer
-    val content = if (isOk) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onErrorContainer
+    val container =
+        if (isOk) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.errorContainer
+    val content =
+        if (isOk) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onErrorContainer
 
     Card(
         shape = RoundedCornerShape(18.dp),
@@ -542,7 +642,9 @@ private fun FormBanner(status: String, details: String, score: Int, isOk: Boolea
 private fun WarningBanner(text: String) {
     Card(
         shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.92f)),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.92f)
+        ),
         modifier = Modifier.fillMaxWidth()
     ) {
         Text(
@@ -593,7 +695,11 @@ private fun RepDashboardCard(
             Spacer(Modifier.width(14.dp))
 
             Column(modifier = Modifier.weight(1f)) {
-                Text("Reps", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    "Reps",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Text(
                     text = "$modeName • Phase $phase",
                     style = MaterialTheme.typography.titleMedium
@@ -634,7 +740,10 @@ private fun CompactQualityCard(q: RepQuality) {
         ) {
             AssistChip(onClick = { }, label = { Text(q.verdict) })
             Spacer(Modifier.width(10.dp))
-            Text("Depth ${q.depthPct}%  •  Tempo ${q.tempoMs}ms", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                "Depth ${q.depthPct}%  •  Tempo ${q.tempoMs}ms",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
@@ -643,7 +752,9 @@ private fun CompactQualityCard(q: RepQuality) {
 private fun CalibrationBanner(calib: CalibrationState) {
     Card(
         shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.92f)),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.92f)
+        ),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(Modifier.padding(14.dp)) {
