@@ -1,0 +1,43 @@
+SmartForm is a real-time fitness assistant for Android that uses on-device pose detection and hand tracking to coach your exercise form, count your reps, and let you control everything with gestures — no buttons, no wearables, and no video ever leaves your phone.
+
+Now fully redesigned with a dark, athletic interface and a graph-driven workout summary.
+
+[h3]🏋️ Smart Rep Counting & Form Coaching[/h3]
+- Real-time full-body pose detection (ML Kit) with a live skeleton overlay
+- Counts reps for curls, squats, and push-ups
+- Form gating: sloppy or partial movements don't get counted
+- Per-rep quality scoring that flags shallow reps and reps done too fast
+
+[h3]📊 Session Summary with Graphs[/h3]
+- Average-score ring and total-rep hero stats
+- Score-per-rep trend chart
+- Good / shallow / too-fast breakdown donut
+- Depth and tempo consistency graphs
+- Full rep-quality timeline
+
+[h3]🤏 Hands-Free Gesture Controls[/h3]
+[b]Pinch & hold[/b] — start or stop a session
+[b]Open palm & hold[/b] — switch exercise mode
+✔ Debounced with multi-frame confirmation
+✔ Resistant to accidental triggers
+[b]New:[/b] on-screen buttons mirror every gesture, so the app stays usable even when your hands aren't in view
+
+[h3]✋ Real-Time Hand Tracking[/h3]
+- 21-point hand landmark detection (MediaPipe)
+- Smooth, stabilized overlay
+- Runs alongside pose detection on a single camera stream
+
+[h3]🎯 Personal Calibration[/h3]
+- Calibrate each exercise to your own range of motion
+- Saved on-device; reset to defaults anytime
+
+[h3]🔒 100% On-Device & Private[/h3]
+- All pose and hand processing runs locally
+- No video is ever uploaded or stored
+
+[h3]🆕 What's New in 1.0[/h3]
+- Brand-new dark "neon" interface
+- Graph-based session summary
+- On-screen controls as a gesture fallback
+- More reliable rep counting and form detection
+- Smaller, faster download
