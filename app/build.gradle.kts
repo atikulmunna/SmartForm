@@ -56,6 +56,17 @@ android {
         }
     }
 
+    // Split the release into per-ABI APKs so downloads are ~40-50 MB instead of a
+    // ~130 MB universal bundle. A universal APK is still produced as a fallback.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("armeabi-v7a", "arm64-v8a")
+            isUniversalApk = true
+        }
+    }
+
     buildFeatures {
         compose = true
     }

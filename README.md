@@ -1,10 +1,23 @@
 # SmartForm
 
-[![Download App](https://img.shields.io/badge/Download%20App-Uptodown-00A6FF?style=for-the-badge)](https://smartform.en.uptodown.com/android)
+[![Download APK](https://img.shields.io/badge/Download-APK-C6FF3D?style=for-the-badge&logo=android&logoColor=black)](https://github.com/atikulmunna/SmartForm/releases/latest/download/SmartForm-arm64-v8a.apk)
+[![Also on Uptodown](https://img.shields.io/badge/Also%20on-Uptodown-00A6FF?style=for-the-badge)](https://smartform.en.uptodown.com/android)
 
 SmartForm is an Android fitness app that performs on-device pose detection and hand tracking to help users train with better form, count reps, and control the experience hands-free with gestures. It is built fully on-device with CameraX, ML Kit, MediaPipe, and Jetpack Compose.
 
 It currently supports guided tracking for **curls, squats, and push-ups**, with posture-aware rep counting, per-exercise calibration, rep-quality scoring, and a graph-driven session summary — all wrapped in a dark, athletic "neon" UI.
+
+## Download
+
+Grab the APK for your device from the [latest release](https://github.com/atikulmunna/SmartForm/releases/latest):
+
+| Variant | Devices | Size |
+|---|---|---|
+| [**arm64-v8a**](https://github.com/atikulmunna/SmartForm/releases/latest/download/SmartForm-arm64-v8a.apk) | Recommended — all modern phones (2017+) | ~45 MB |
+| [armeabi-v7a](https://github.com/atikulmunna/SmartForm/releases/latest/download/SmartForm-armeabi-v7a.apk) | Older 32-bit devices | ~36 MB |
+| [universal](https://github.com/atikulmunna/SmartForm/releases/latest/download/SmartForm-universal.apk) | Works on any device | ~130 MB |
+
+Also available on [Uptodown](https://smartform.en.uptodown.com/android). Requires Android 8.0 (API 26)+.
 
 ## Screenshots
 
