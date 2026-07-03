@@ -1,5 +1,6 @@
 package com.app.smartform.camera
 
+import android.util.Log
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
@@ -7,6 +8,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -20,11 +22,14 @@ import com.app.smartform.pose.PoseProcessor
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
+private const val TAG = "CameraPreview"
+
 @Composable
 fun CameraPreview(
     modifier: Modifier = Modifier,
     onPoseFrame: (PoseFrame) -> Unit,
-    onHandFrame: (HandFrame?) -> Unit
+    onHandFrame: (HandFrame?) -> Unit,
+    onGesturesAvailable: (Boolean) -> Unit = {}
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -43,6 +48,8 @@ fun CameraPreview(
 
     val poseProcessor = remember { PoseProcessor(context) }
     val handProcessor = remember { HandProcessor(context) }
+
+    LaunchedEffect(handProcessor) { onGesturesAvailable(handProcessor.available) }
 
     DisposableEffect(lifecycleOwner) {
         val mainExecutor = ContextCompat.getMainExecutor(context)
@@ -89,7 +96,8 @@ fun CameraPreview(
                         timestampMs = tsMs,
                         onHandFrame = onHandFrame
                     )
-                } catch (_: Throwable) {
+                } catch (t: Throwable) {
+                    Log.e(TAG, "Hand analysis failed for a frame", t)
                     onHandFrame(null)
                 } finally {
                     // HandProcessor does NOT close, so we close here.
@@ -108,6 +116,7 @@ fun CameraPreview(
                 )
             }.onFailure {
                 // If binding fails, avoid silent crash; also stop overlays.
+                Log.e(TAG, "Failed to bind camera use-cases", it)
                 onHandFrame(null)
             }
         }

@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.graphics.Rect
+import android.util.Log
 import androidx.camera.core.ImageProxy
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.core.BaseOptions
@@ -16,7 +17,9 @@ class HandProcessor(context: Context) {
     private val converter = YuvToRgbConverter()
     private var reuseBitmap: Bitmap? = null
 
-    private val landmarker: HandLandmarker = run {
+    // Null if the model asset is missing/corrupt. We degrade to "no gestures"
+    // instead of crashing the whole app on first composition.
+    private val landmarker: HandLandmarker? = try {
         val baseOptions = BaseOptions.builder()
             .setModelAssetPath("hand_landmarker.task")
             .build()
@@ -31,7 +34,13 @@ class HandProcessor(context: Context) {
             .build()
 
         HandLandmarker.createFromOptions(context.applicationContext, options)
+    } catch (t: Throwable) {
+        Log.e(TAG, "Failed to initialize HandLandmarker — gesture control disabled", t)
+        null
     }
+
+    /** True when hand tracking (and therefore gesture control) is available. */
+    val available: Boolean get() = landmarker != null
 
     private var frameCount = 0
     private var lastFrame: HandFrame? = null
@@ -42,6 +51,12 @@ class HandProcessor(context: Context) {
         timestampMs: Long,
         onHandFrame: (HandFrame?) -> Unit
     ) {
+        val lm = landmarker ?: run {
+            // No model -> no hands. Overlay/gestures simply stay inactive.
+            onHandFrame(null)
+            return
+        }
+
         frameCount++
 
         // Optional throttling: run every 2 frames.
@@ -70,7 +85,7 @@ class HandProcessor(context: Context) {
 
         val mpImage = BitmapImageBuilder(uprightBmp).build()
 
-        val result: HandLandmarkerResult = landmarker.detectForVideo(mpImage, timestampMs)
+        val result: HandLandmarkerResult = lm.detectForVideo(mpImage, timestampMs)
 
         val hands = result.landmarks().mapIndexed { i, landmarks ->
             val handed = result.handedness()[i].firstOrNull()
@@ -96,7 +111,7 @@ class HandProcessor(context: Context) {
     }
 
     fun close() {
-        landmarker.close()
+        landmarker?.close()
     }
 
     private fun rotateBitmap(src: Bitmap, rotationDegrees: Int): Bitmap {
@@ -104,5 +119,9 @@ class HandProcessor(context: Context) {
         if (r == 0) return src
         val m = Matrix().apply { postRotate(r.toFloat()) }
         return Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
+    }
+
+    private companion object {
+        const val TAG = "HandProcessor"
     }
 }

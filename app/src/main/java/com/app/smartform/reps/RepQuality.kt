@@ -17,16 +17,19 @@ object RepQualityEvaluator {
         tempoMs: Long
     ): RepQuality {
 
-        // Depth model:
-        // thresholds.downThresh = "deep enough", thresholds.upThresh = "fully up"
-        val down = thresholds.downThresh
-        val up = thresholds.upThresh
+        // Depth model: "deeper" always means a smaller joint angle (more flexed /
+        // more bent), so we measure the rep's minimum angle against the [lo, hi]
+        // span of the two thresholds. This is direction-agnostic and therefore
+        // correct for curls too, where UP (flexed, ~70°) is LOWER than DOWN
+        // (extended, ~150°) — the naive (up - down) denominator went negative there.
+        val hi = maxOf(thresholds.downThresh, thresholds.upThresh)
+        val lo = minOf(thresholds.downThresh, thresholds.upThresh)
 
         val depthPct = if (repAngleMin == null) {
             0
         } else {
-            val denom = (up - down).coerceAtLeast(1.0)
-            val pct = ((up - repAngleMin) / denom) * 100.0
+            val denom = (hi - lo).coerceAtLeast(1.0)
+            val pct = ((hi - repAngleMin) / denom) * 100.0
             pct.coerceIn(0.0, 100.0).toInt()
         }
 

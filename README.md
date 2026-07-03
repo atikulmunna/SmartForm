@@ -2,97 +2,98 @@
 
 [![Download App](https://img.shields.io/badge/Download%20App-Uptodown-00A6FF?style=for-the-badge)](https://smartform.en.uptodown.com/android)
 
-SmartForm is an Android fitness app that performs on-device pose detection and hand tracking to help users train with better form, count reps, and control parts of the experience with gestures. The app is built fully on-device with CameraX, ML Kit, MediaPipe, and Jetpack Compose.
+SmartForm is an Android fitness app that performs on-device pose detection and hand tracking to help users train with better form, count reps, and control the experience hands-free with gestures. It is built fully on-device with CameraX, ML Kit, MediaPipe, and Jetpack Compose.
 
-It currently supports guided tracking for curls, squats, and push-ups, with posture-aware rep counting, per-exercise calibration, quality scoring, and a session summary flow.
+It currently supports guided tracking for **curls, squats, and push-ups**, with posture-aware rep counting, per-exercise calibration, rep-quality scoring, and a graph-driven session summary — all wrapped in a dark, athletic "neon" UI.
+
+## Screenshots
+
+| Onboarding | Live workout HUD | Session summary | Session breakdown |
+|---|---|---|---|
+| ![Onboarding](marketing/screenshots/onboarding.jpeg) | ![Live HUD](marketing/screenshots/01_main_hud.png) | ![Summary](marketing/screenshots/02_summary_top.png) | ![Breakdown](marketing/screenshots/03_summary_bottom.png) |
 
 ## Overview
 
-SmartForm combines three core capabilities in a single camera pipeline:
+SmartForm combines three capabilities in a single camera pipeline:
 
 - Real-time body pose detection for exercise analysis
 - Real-time hand landmark tracking for gesture input
 - Live rep counting and form evaluation for supported exercises
 
-The current app experience is designed around a hands-free workout loop:
+The experience is designed around a hands-free workout loop:
 
 1. Grant camera access
-2. Choose an exercise mode
-3. Start a session with a gesture
+2. Choose an exercise mode (gesture or on-screen)
+3. Start a session (pinch gesture or on-screen button)
 4. Perform reps while SmartForm evaluates posture and rep quality
-5. End the session and review the summary
+5. End the session and review the graph-based summary
 
-## Current Features
+## Features
 
-### Real-Time Pose Tracking
-
-- Full-body pose detection using ML Kit pose detection
+### Real-time pose tracking
+- Full-body pose detection using ML Kit Pose Detection
 - Live skeleton overlay aligned to the camera preview
-- Continuous frame processing optimized for on-device use
+- Continuous, backpressure-limited frame processing tuned for on-device use
 
-### Hand Tracking and Gesture Controls
-
+### Hand tracking and gesture control
 - 21-point hand landmark detection using MediaPipe Tasks
-- Gesture recognition from the live camera stream
-- Debounced, hold-based interactions to reduce accidental triggers
+- Debounced, hold-based gestures to reduce accidental triggers
+  - `Pinch-hold` — start / stop a session (or capture a calibration pose)
+  - `Open-palm-hold` — switch exercise mode while paused
+- **On-screen controls** (Start/Pause, End, mode selector) fully mirror the gestures, so the app stays usable if hand tracking is unavailable
 
-Current gesture behavior:
+### Exercise modes
+Bicep curls, squats, and push-ups — each with its own rep thresholds and independent calibration. Push-up mode shows an in-app hint to place the phone to your side (front-camera pose tracking of a plank is unreliable).
 
-- `Pinch-hold`: start or stop a workout session
-- `Open-palm-hold`: switch exercise mode when a session is not running
-- `Pinch-hold during calibration`: capture calibration poses
-
-### Exercise Modes
-
-SmartForm currently supports:
-
-- Bicep curls
-- Squats
-- Push-ups
-
-Each mode uses its own rep thresholds and can be calibrated independently.
-
-### Rep Counting and Form Gating
-
+### Form-gated rep counting
 - Tracks rep phases and counts completed reps in real time
-- Pauses effective counting when posture quality drops below acceptable form
-- Prevents low-quality movement from being counted as valid reps
+- **Posture gating is phase-independent** — it checks stability/visibility that holds across a rep (body in frame, level, torso not swinging), so counting is never paused mid-rep by the movement itself
+- Low-quality movement doesn't get credited as a valid rep
 
-### Rep Quality Feedback
-
-- Computes rep quality based on movement depth and tempo
-- Flags shallow reps and overly fast reps
-- Maintains a recent rep timeline for session feedback
-- Calculates an average session score
+### Rep-quality feedback
+- Direction-agnostic depth model (correct for curls, squats, and push-ups)
+- Flags shallow reps and overly fast reps, with a per-rep score
+- Maintains a recent rep timeline and a running average session score
 
 ### Calibration
+- Per-exercise calibration adapts thresholds to the user
+- Stored locally with DataStore; reset-to-defaults supported
 
-- Supports per-exercise calibration to adapt thresholds to the user
-- Stores calibration data locally using DataStore
-- Includes reset support for returning to default thresholds
+### Session summary (graphs)
+A scrollable dashboard rendered with hand-drawn Compose-Canvas charts:
+- Average-score ring + total reps hero
+- Score-per-rep line/area chart
+- Verdict donut (good / shallow / too-fast) with legend
+- Depth % and tempo small-multiple sparklines
+- Full rep-quality timeline
 
-### Session Summary
+### Onboarding & developer tools
+- First-run screen with a gesture how-to and on-device privacy note
+- Built-in debug panel for inspecting thresholds, angles, posture, and calibration
 
-- Displays total reps
-- Shows average score
-- Breaks down good, shallow, and too-fast reps
+## Architecture
 
-### Debug and Development Aids
+SmartForm uses a state-driven Compose UI backed by a `ViewModel`:
 
-- Built-in debug panel for inspecting thresholds, angles, posture state, and calibration flow
-- Useful for tuning exercise logic during development and testing
+- **`SessionViewModel`** owns all in-session state (rep counting, posture, quality/session tallies, calibration) and exposes an immutable `SessionUiState`. It survives configuration changes and persists the selected mode via `SavedStateHandle`. Camera frames are fed in by plain method calls; hand frames land in a thread-safe `StateFlow` (they arrive on a background analyzer thread).
+- **`SessionTracker`** is a pure, Android-free accumulator for per-session rep quality — unit-tested on the host JVM.
+- **`RepCounter`** is a hysteresis + confirm-frame + EMA state machine with an injectable clock, so its transitions are deterministically testable.
+- **`PoseMath`** holds the shared joint-angle geometry used by rep counting and posture evaluation.
+- **Frame pipeline:** CameraX drives two `ImageAnalysis` use-cases on separate single-thread executors — `PoseProcessor` (ML Kit, YUV) and `HandProcessor` (MediaPipe, RGBA) — with `STRATEGY_KEEP_ONLY_LATEST` backpressure. Model initialization fails gracefully (a missing/corrupt hand model disables gestures instead of crashing).
+- **Charts** are drawn by hand with Compose `Canvas` (`ui/charts/`) — no external charting dependency, fully theme-aware.
 
-## Tech Stack
+## Tech stack
 
 - Language: Kotlin
-- UI: Jetpack Compose
+- UI: Jetpack Compose (Material 3), committed dark "neon" theme
+- Architecture: MVVM (`ViewModel` + immutable UI state) with pure, testable domain logic
 - Camera: CameraX
-- Pose Detection: ML Kit Pose Detection
-- Hand Tracking: MediaPipe Tasks Vision
-- Local Storage: DataStore Preferences
-- Architecture Style: state-driven Compose UI with exercise-specific processing modules
+- Pose detection: ML Kit Pose Detection
+- Hand tracking: MediaPipe Tasks Vision
+- Local storage: DataStore Preferences
+- Testing: JUnit (host-JVM unit tests)
 
-## Project Structure
+## Project structure
 
 ```text
 app/src/main/java/com/app/smartform/
@@ -110,6 +111,7 @@ app/src/main/java/com/app/smartform/
 │   └── YuvToRgbConverter.kt
 ├── pose/
 │   ├── PoseFrame.kt
+│   ├── PoseMath.kt
 │   ├── PoseProcessor.kt
 │   ├── PostureEvaluator.kt
 │   └── SkeletonOverlay.kt
@@ -119,45 +121,77 @@ app/src/main/java/com/app/smartform/
 │   ├── RepQuality.kt
 │   └── RepThresholds.kt
 ├── session/
-│   └── SessionStats.kt
+│   ├── SessionStats.kt
+│   ├── SessionTracker.kt
+│   └── SessionViewModel.kt
 ├── ui/
-│   ├── RepTimeline.kt
-│   └── SessionSummaryScreen.kt
-├── ui/theme/
-│   ├── Color.kt
-│   ├── Theme.kt
-│   └── Type.kt
+│   ├── SessionSummaryScreen.kt
+│   ├── charts/Charts.kt
+│   └── theme/ (Color.kt, Theme.kt, Type.kt)
 └── MainActivity.kt
 ```
 
+## Testing
+
+Domain logic is covered by host-JVM unit tests:
+
+```bash
+./gradlew :app:testDebugUnitTest
+```
+
+- `RepCounterTest` — down/up transitions, hysteresis, form-gating, reset, arm selection
+- `RepQualityEvaluatorTest` — depth %, verdicts, tempo thresholds, curl (inverted-threshold) depth
+- `SessionTrackerTest` — verdict tallies, average score, timeline cap, snapshot
+- `PoseMathTest` — joint-angle geometry
+- `CalibrationProfileTest` — default thresholds
+
 ## Requirements
 
-- Android Studio with current Android SDK tooling
+- Android Studio with a current Android SDK (platforms 35+)
 - Java 17+
-- Android device with a working camera
+- An Android device with a working camera (an emulator is not reliable for pose/hand validation)
 
-An emulator may build and launch the app, but it is not reliable for realistic pose and hand tracking validation.
-
-## Build and Run
-
-From the project root:
+## Build and run
 
 ```bash
 ./gradlew :app:installDebug
 ```
 
-If you want a clean reinstall:
+Clean reinstall:
 
 ```bash
 ./gradlew :app:uninstallDebug
 ./gradlew :app:installDebug
 ```
 
-## Android Configuration
+## Building a signed release
+
+Release signing reads credentials from a **git-ignored** `keystore.properties` at the project root:
+
+```properties
+storeFile=/path/to/your.keystore
+storePassword=********
+keyAlias=********
+keyPassword=********
+```
+
+Then:
+
+```bash
+./gradlew :app:assembleRelease
+```
+
+Notes:
+- The `release` build type enables R8 minification and resource shrinking, with keep rules for ML Kit / MediaPipe (`app/proguard-rules.pro`).
+- If `keystore.properties` is absent, release falls back to the debug key so local test builds still work.
+- The output is a *universal* APK bundling native libraries for all ABIs, so it is large (~130 MB). This is fine for Uptodown; ABI splits can shrink it if needed.
+
+## Android configuration
 
 - Min SDK: 26
-- Target SDK: 34
-- Compile SDK: 34
+- Target SDK: 35
+- Compile SDK: 35
+- Version: 1.0
 
 Required permission:
 
@@ -165,80 +199,30 @@ Required permission:
 <uses-permission android:name="android.permission.CAMERA" />
 ```
 
-The project also includes the MediaPipe hand landmark task asset at:
-
-```text
-app/src/main/assets/hand_landmarker.task
-```
-
-## User Experience Flow
-
-### 1. Grant Permission
-
-The app starts with a camera permission screen. Once permission is granted, the live camera view and overlays become active.
-
-### 2. Select Exercise
-
-Exercise mode can be cycled with an open-palm hold while the app is idle.
-
-### 3. Start Session
-
-Use a pinch-hold gesture to start tracking. The UI changes to show running state, current reps, phase, and quality metrics.
-
-### 4. Perform Reps
-
-While the session is running:
-
-- Pose landmarks drive posture checks
-- Rep logic tracks the active exercise
-- Rep quality analysis scores each completed rep
-- Counting is effectively paused if form is not acceptable
-
-### 5. End Session
-
-The session can be ended from the in-app control, after which a summary screen presents the workout results.
+The MediaPipe hand-landmark asset lives at `app/src/main/assets/hand_landmarker.task`.
 
 ## Limitations
 
-- Best gesture accuracy is typically achieved when the user is clearly visible and centered in frame
-- Very close distances can reduce hand landmark stability
-- Low-light conditions can reduce both pose and hand detection quality
-- Rep counting depends on landmark visibility and exercise-specific posture assumptions
-- Emulator camera input is not a reliable substitute for real-device testing
+- Gesture accuracy is best when the user is clearly visible and centered
+- Very close distances reduce hand-landmark stability
+- Low light reduces both pose and hand detection quality
+- Push-ups are unreliable from a front camera; place the phone to your side
+- The release APK is not yet 16 KB page-size compliant (a Google Play requirement for updates targeting Android 15+); it is unaffected on current devices and for Uptodown distribution
 
 ## Troubleshooting
 
-### Camera preview does not start
-
-- Confirm camera permission has been granted
-- Test on a physical Android device
-- Verify the device camera is available and not in use by another app
-
-### Gestures are not recognized reliably
-
-- Keep the hand inside the frame and clearly visible
-- Improve lighting
-- Avoid holding the hand too close to the camera
-- Hold the gesture steadily long enough for the debounce window
-
-### Reps are not being counted
-
-- Check whether posture feedback indicates poor form
-- Make sure the selected exercise mode matches the movement being performed
-- Use calibration if thresholds do not match the user's range of motion
-
-### Calibration feels off
-
-- Re-run calibration from the debug tools
-- Reset calibration to defaults and capture cleaner top and bottom poses
+- **Camera preview doesn't start** — confirm camera permission, test on a physical device
+- **Gestures not recognized** — keep the hand in frame, improve lighting, hold the gesture steadily; on-screen buttons always work as a fallback
+- **Reps not counting** — check the form banner, make sure the selected mode matches the movement, or run calibration
+- **Calibration feels off** — reset to defaults and recapture clean top/bottom poses
 
 ## Roadmap
 
 - Richer coaching cues during active reps
-- More detailed session history and analytics
-- Additional exercise modes
-- Exportable workout summaries
-- More robust onboarding and in-app guidance
+- Session history and trends across workouts
+- Side-camera support for push-ups
+- 16 KB page-size compliance for Play distribution
+- Additional exercise modes and exportable summaries
 
 ## Contributing
 

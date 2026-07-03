@@ -15,3 +15,8 @@
 local.properties
 desktop.ini
 *.apk
+
+# Release signing — never commit secrets or the keystore
+keystore.properties
+*.jks
+*.keystore

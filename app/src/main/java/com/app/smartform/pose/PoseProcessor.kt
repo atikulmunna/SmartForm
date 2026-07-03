@@ -3,6 +3,7 @@ package com.app.smartform.pose
 import android.content.Context
 import android.graphics.ImageFormat
 import android.graphics.Rect
+import android.util.Log
 import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageProxy
 import com.google.mlkit.vision.common.InputImage
@@ -81,6 +82,9 @@ class PoseProcessor(context: Context) {
                     )
                 )
             }
+            .addOnFailureListener { e ->
+                Log.e(TAG, "Pose detection failed for a frame", e)
+            }
             .addOnCompleteListener {
                 imageProxy.close()
             }
@@ -88,6 +92,10 @@ class PoseProcessor(context: Context) {
 
     fun close() {
         detector.close()
+    }
+
+    private companion object {
+        const val TAG = "PoseProcessor"
     }
 
     private fun rotateRectToUpright(

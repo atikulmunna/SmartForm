@@ -3,8 +3,6 @@ package com.app.smartform.pose
 import com.app.smartform.reps.ExerciseMode
 import com.google.mlkit.vision.pose.PoseLandmark
 import kotlin.math.abs
-import kotlin.math.acos
-import kotlin.math.sqrt
 
 data class PostureFeedback(
     val status: String,
@@ -53,31 +51,18 @@ object PostureEvaluator {
         if (hipBad) issues += if (hipTiltNorm > 0) "Right hip higher" else "Left hip higher"
 
         // ---- Mode-specific “READY stance” gates ----
-        fun angleDeg(ax: Float, ay: Float, bx: Float, by: Float, cx: Float, cy: Float): Double {
-            val abx = ax - bx
-            val aby = ay - by
-            val cbx = cx - bx
-            val cby = cy - by
-            val ab = sqrt((abx * abx + aby * aby).toDouble())
-            val cb = sqrt((cbx * cbx + cby * cby).toDouble())
-            if (ab < 1e-6 || cb < 1e-6) return 180.0
-            val dot = (abx * cbx + aby * cby).toDouble()
-            val cos = (dot / (ab * cb)).coerceIn(-1.0, 1.0)
-            return Math.toDegrees(acos(cos))
-        }
-
         fun kneeAngle(right: Boolean): Double? {
             val hip = p(if (right) PoseLandmark.RIGHT_HIP else PoseLandmark.LEFT_HIP) ?: return null
             val knee = p(if (right) PoseLandmark.RIGHT_KNEE else PoseLandmark.LEFT_KNEE) ?: return null
             val ankle = p(if (right) PoseLandmark.RIGHT_ANKLE else PoseLandmark.LEFT_ANKLE) ?: return null
-            return angleDeg(hip.x, hip.y, knee.x, knee.y, ankle.x, ankle.y)
+            return PoseMath.angleDeg(hip.x, hip.y, knee.x, knee.y, ankle.x, ankle.y)
         }
 
         fun elbowAngle(right: Boolean): Double? {
             val sh = p(if (right) PoseLandmark.RIGHT_SHOULDER else PoseLandmark.LEFT_SHOULDER) ?: return null
             val el = p(if (right) PoseLandmark.RIGHT_ELBOW else PoseLandmark.LEFT_ELBOW) ?: return null
             val wr = p(if (right) PoseLandmark.RIGHT_WRIST else PoseLandmark.LEFT_WRIST) ?: return null
-            return angleDeg(sh.x, sh.y, el.x, el.y, wr.x, wr.y)
+            return PoseMath.angleDeg(sh.x, sh.y, el.x, el.y, wr.x, wr.y)
         }
 
         fun torsoUpright(): Boolean {
@@ -91,29 +76,23 @@ object PostureEvaluator {
 
         when (mode) {
             ExerciseMode.SQUAT -> {
+                // Presence only: a squat naturally bends the knees and hinges the
+                // torso forward, so we must NOT gate on knee angle or torso lean —
+                // that would flip to "not OK" at the bottom of every rep and pause
+                // counting. Form here means "squarely visible + level" (symmetry
+                // issues were already added above).
                 val rk = kneeAngle(true)
                 val lk = kneeAngle(false)
                 if (rk == null && lk == null) return PostureFeedback("Detecting...", "Need knees + ankles", 0)
 
-                val knee = listOfNotNull(rk, lk).average()
-
-                // Conservative “ready” = standing-ish (not already squatting)
-                val uprightOk = torsoUpright()
-                val kneesExtended = knee >= 155.0
-
-                if (!uprightOk) issues += "Torso leaning"
-                if (!kneesExtended) issues += "Stand tall (start position)"
-
-                // Score
                 val score = when {
                     issues.isEmpty() -> 95
                     issues.size == 1 -> 80
-                    issues.size == 2 -> 65
-                    else -> 50
+                    else -> 65
                 }
 
                 return if (issues.isEmpty()) {
-                    PostureFeedback("Good form", "Squat ready ✅", score)
+                    PostureFeedback("Good form", "Squat — good posture ✅", score)
                 } else {
                     PostureFeedback("Adjust form", issues.joinToString(" • "), score)
                 }
@@ -124,24 +103,19 @@ object PostureEvaluator {
                 val le = elbowAngle(false)
                 if (re == null && le == null) return PostureFeedback("Detecting...", "Need elbows + wrists", 0)
 
-                val elbow = listOfNotNull(re, le).average()
-
-                // Conservative “ready” = arms mostly extended (not mid-curl)
-                val uprightOk = torsoUpright()
-                val armsDown = elbow >= 150.0
-
-                if (!uprightOk) issues += "Torso leaning"
-                if (!armsDown) issues += "Lower arms (start position)"
+                // Phase-independent gate: do NOT require arms extended — the whole
+                // point of a curl is to flex, and gating on that pauses counting
+                // mid-rep. We only flag swinging the torso (a common way to cheat).
+                if (!torsoUpright()) issues += "Don't swing — keep torso still"
 
                 val score = when {
                     issues.isEmpty() -> 95
                     issues.size == 1 -> 80
-                    issues.size == 2 -> 65
-                    else -> 50
+                    else -> 65
                 }
 
                 return if (issues.isEmpty()) {
-                    PostureFeedback("Good form", "Curl ready ✅", score)
+                    PostureFeedback("Good form", "Curl — good posture ✅", score)
                 } else {
                     PostureFeedback("Adjust form", issues.joinToString(" • "), score)
                 }

@@ -2,11 +2,8 @@ package com.app.smartform.reps
 
 import android.os.SystemClock
 import com.app.smartform.pose.PoseFrame
-import com.app.smartform.pose.PosePoint
-import com.google.mlkit.vision.pose.PoseLandmark
+import com.app.smartform.pose.PoseMath
 import com.google.mlkit.vision.pose.PoseLandmark.*
-import kotlin.math.acos
-import kotlin.math.sqrt
 
 data class RepResult(
     val reps: Int,
@@ -23,7 +20,11 @@ data class RepResult(
     val debug: String = ""
 )
 
-class RepCounter {
+/**
+ * @param now injectable time source (defaults to [SystemClock.uptimeMillis]).
+ *            Injecting it lets the rep state machine be unit-tested deterministically.
+ */
+class RepCounter(private val now: () -> Long = { SystemClock.uptimeMillis() }) {
 
     private data class State(
         var reps: Int = 0,
@@ -41,6 +42,10 @@ class RepCounter {
         states.clear()
     }
 
+    /**
+     * Frame-driven entry point. Extracts the primary joint angle from [frame] and
+     * delegates to the pure [updateWithAngle] state machine.
+     */
     fun update(
         mode: ExerciseMode,
         frame: PoseFrame?,
@@ -59,11 +64,7 @@ class RepCounter {
             )
         }
 
-        val thresholds = when (mode) {
-            ExerciseMode.CURL -> profile.curl
-            ExerciseMode.SQUAT -> profile.squat
-            ExerciseMode.PUSHUP -> profile.pushup
-        }
+        val thresholds = thresholdsFor(mode, profile)
 
         val raw = currentPrimaryAngle(mode, frame)
             ?: return RepResult(
@@ -76,9 +77,26 @@ class RepCounter {
                 upThresh = thresholds.upThresh
             )
 
-        val ema = smoothEma(s, raw, alpha = 0.35)
+        return updateWithAngle(mode, raw, running, thresholds)
+    }
 
-        val now = SystemClock.uptimeMillis()
+    /**
+     * Pure rep state machine: given a freshly measured primary [rawAngle], advances
+     * the hysteresis/confirm-frame state for [mode] and returns the current result.
+     *
+     * Kept free of frame/Android types so it can be exercised directly in unit tests.
+     */
+    fun updateWithAngle(
+        mode: ExerciseMode,
+        rawAngle: Double,
+        running: Boolean,
+        thresholds: RepThresholds
+    ): RepResult {
+        val s = states.getOrPut(mode) { State() }
+
+        val ema = smoothEma(s, rawAngle, alpha = 0.35)
+
+        val now = now()
         val minGapMs = 450L
         val confirmFrames = 3
         val canMove = (now - s.lastTransitionMs) > minGapMs
@@ -105,14 +123,14 @@ class RepCounter {
             }
         }
 
-        // Determine “wantDown / wantUp” using hysteresis + current state
+        // Determine "wantDown / wantUp" using hysteresis + current state
         val wantDown = if (!s.inDown) {
             when (mode) {
                 ExerciseMode.CURL -> ema > downEnter
                 else -> ema < downEnter
             }
         } else {
-            // already in down; don’t care about re-entering
+            // already in down; don't care about re-entering
             false
         }
 
@@ -122,7 +140,7 @@ class RepCounter {
                 else -> ema > upExit
             }
         } else {
-            // already up; don’t care about re-exiting
+            // already up; don't care about re-exiting
             false
         }
 
@@ -160,7 +178,7 @@ class RepCounter {
             reps = s.reps,
             phase = s.phase,
             angle = ema,
-            rawAngle = raw,
+            rawAngle = rawAngle,
             wantDown = wantDown,
             wantUp = wantUp,
             downThresh = thresholds.downThresh,
@@ -168,7 +186,7 @@ class RepCounter {
             inDown = s.inDown,
             streak = s.streak,
             canMove = canMove,
-            debug = "raw=${raw.toInt()} ema=${ema.toInt()} gap=${gap}ms " +
+            debug = "raw=${rawAngle.toInt()} ema=${ema.toInt()} gap=${gap}ms " +
                     "downEnter=${downEnter.toInt()} upExit=${upExit.toInt()}"
         )
     }
@@ -176,7 +194,9 @@ class RepCounter {
     fun currentPrimaryAngle(mode: ExerciseMode, frame: PoseFrame?): Double? {
         if (frame == null) return null
         return when (mode) {
-            ExerciseMode.CURL -> best(elbow(frame, true), elbow(frame, false))
+            // Whichever arm is actually curling drives the count (the more-flexed one),
+            // so single-arm and either-hand curls are counted — not just the right arm.
+            ExerciseMode.CURL -> moreFlexed(elbow(frame, true), elbow(frame, false))
             ExerciseMode.SQUAT -> avg(knee(frame, true), knee(frame, false))
             ExerciseMode.PUSHUP -> avg(elbow(frame, true), elbow(frame, false))
         }
@@ -207,22 +227,7 @@ class RepCounter {
             return null
         }
 
-        return angleDeg(pa, pb, pc)
-    }
-
-    private fun angleDeg(a: PosePoint, b: PosePoint, c: PosePoint): Double {
-        val abx = a.x - b.x
-        val aby = a.y - b.y
-        val cbx = c.x - b.x
-        val cby = c.y - b.y
-
-        val ab = sqrt((abx * abx + aby * aby).toDouble())
-        val cb = sqrt((cbx * cbx + cby * cby).toDouble())
-        if (ab < 1e-6 || cb < 1e-6) return 180.0
-
-        val dot = (abx * cbx + aby * cby).toDouble()
-        val cos = (dot / (ab * cb)).coerceIn(-1.0, 1.0)
-        return Math.toDegrees(acos(cos))
+        return PoseMath.angleDeg(pa, pb, pc)
     }
 
     private fun smoothEma(s: State, v: Double, alpha: Double): Double {
@@ -235,15 +240,24 @@ class RepCounter {
         return s.ema
     }
 
-    private fun best(a: Double?, b: Double?): Double? = when {
-        a == null -> b
-        b == null -> a
-        else -> a
-    }
+    private fun thresholdsFor(mode: ExerciseMode, profile: CalibrationProfile): RepThresholds =
+        when (mode) {
+            ExerciseMode.CURL -> profile.curl
+            ExerciseMode.SQUAT -> profile.squat
+            ExerciseMode.PUSHUP -> profile.pushup
+        }
+}
 
-    private fun avg(a: Double?, b: Double?): Double? = when {
-        a == null -> b
-        b == null -> a
-        else -> (a + b) / 2.0
-    }
+/** Pick the more-flexed (smaller) of two elbow angles; tolerates a missing side. */
+internal fun moreFlexed(a: Double?, b: Double?): Double? = when {
+    a == null -> b
+    b == null -> a
+    else -> minOf(a, b)
+}
+
+/** Average two joint angles; tolerates a missing side. */
+internal fun avg(a: Double?, b: Double?): Double? = when {
+    a == null -> b
+    b == null -> a
+    else -> (a + b) / 2.0
 }

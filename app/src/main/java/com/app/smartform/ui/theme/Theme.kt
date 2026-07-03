@@ -1,57 +1,73 @@
 package com.app.smartform.ui.theme
 
 import android.app.Activity
-import android.os.Build
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
 
-private val DarkColorScheme = darkColorScheme(
-    primary = Purple80,
-    secondary = PurpleGrey80,
-    tertiary = Pink80
-)
+/**
+ * SmartForm commits to a single dark, athletic "neon" identity — no light mode and
+ * no wallpaper-driven dynamic color, so the brand looks the same on every device
+ * and reads well over a live camera feed.
+ */
+private val SmartFormColors = darkColorScheme(
+    primary = NeonLime,
+    onPrimary = Charcoal900,
+    primaryContainer = LimeContainer,
+    onPrimaryContainer = OnLimeContainer,
 
-private val LightColorScheme = lightColorScheme(
-    primary = Purple40,
-    secondary = PurpleGrey40,
-    tertiary = Pink40
+    secondary = ElectricCyan,
+    onSecondary = Charcoal900,
+    secondaryContainer = TealContainer,
+    onSecondaryContainer = OnTealContainer,
 
-    /* Other default colors to override
-    background = Color(0xFFFFFBFE),
-    surface = Color(0xFFFFFBFE),
-    onPrimary = Color.White,
-    onSecondary = Color.White,
-    onTertiary = Color.White,
-    onBackground = Color(0xFF1C1B1F),
-    onSurface = Color(0xFF1C1B1F),
-    */
+    tertiary = SoftViolet,
+    onTertiary = Charcoal900,
+    tertiaryContainer = VioletContainer,
+    onTertiaryContainer = OnVioletContainer,
+
+    background = Charcoal900,
+    onBackground = InkHigh,
+
+    surface = Charcoal800,
+    onSurface = InkHigh,
+    surfaceVariant = Charcoal700,
+    onSurfaceVariant = InkMuted,
+    surfaceContainer = Charcoal700,
+    surfaceContainerHigh = Charcoal600,
+    surfaceContainerHighest = Charcoal600,
+
+    error = NeonRed,
+    onError = Charcoal900,
+    errorContainer = RedContainer,
+    onErrorContainer = OnRedContainer,
+
+    outline = OutlineDim,
+    outlineVariant = OutlineFaint,
 )
 
 @Composable
 fun SmartFormTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    // Dynamic color is available on Android 12+
-    dynamicColor: Boolean = true,
     content: @Composable () -> Unit
 ) {
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        SideEffect {
+            val window = (view.context as Activity).window
+            window.statusBarColor = Charcoal900.toArgb()
+            window.navigationBarColor = Charcoal900.toArgb()
+            val controller = WindowCompat.getInsetsController(window, view)
+            controller.isAppearanceLightStatusBars = false
+            controller.isAppearanceLightNavigationBars = false
         }
-
-        darkTheme -> DarkColorScheme
-        else -> LightColorScheme
     }
 
     MaterialTheme(
-        colorScheme = colorScheme,
+        colorScheme = SmartFormColors,
         typography = Typography,
         content = content
     )
