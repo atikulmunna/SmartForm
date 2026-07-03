@@ -20,7 +20,7 @@ Grab the APK for your device from the [latest release](https://github.com/atikul
 Requires Android 8.0 (API 26)+. Also available on Uptodown:
 
 <a href="https://smartform.en.uptodown.com/android" title="Download SmartForm">
-  <img src="https://stc.utdstc.com/img/mediakit/download-gio-big.png" alt="Download SmartForm" width="240">
+  <img src="https://stc.utdstc.com/img/mediakit/download-gio-big.png" alt="Download SmartForm" width="160">
 </a>
 
 ## Screenshots
