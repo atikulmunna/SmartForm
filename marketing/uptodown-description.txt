@@ -35,6 +35,10 @@ Now fully redesigned with a dark, athletic interface and a graph-driven workout 
 - All pose and hand processing runs locally
 - No video is ever uploaded or stored
 
+[h3]🆕 What's New in 1.0.1[/h3]
+- Fixed hand-gesture control, which was silently disabled on the previous release — pinch-to-start/stop and open-palm mode switching now work
+- Pose tracking, rep counting, and on-screen controls were unaffected
+
 [h3]🆕 What's New in 1.0[/h3]
 - Brand-new dark "neon" interface
 - Graph-based session summary
