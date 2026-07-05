@@ -42,6 +42,14 @@
 -keep class com.google.protobuf.** { *; }
 -dontwarn com.google.protobuf.**
 
+# MediaPipe logs via Google Flogger, which resolves the calling class by walking
+# the stack and matching the literal package string "com.google.common.flogger".
+# R8 renaming those classes breaks the match ("no caller found on the stack"),
+# which aborts MediaPipe Graph.<clinit> and silently disables hand tracking on
+# release builds. Keep Flogger's names intact so the stack scan matches.
+-keep class com.google.common.flogger.** { *; }
+-dontwarn com.google.common.flogger.**
+
 # Native method bindings used by both SDKs
 -keepclasseswithmembernames class * {
     native <methods>;
